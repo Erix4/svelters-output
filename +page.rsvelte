@@ -1,0 +1,67 @@
+<script>
+    use Button from "./Button.rsvelte";
+
+    let counter = $state(0);
+    let my_struct = $state(MyStruct {
+        a: 10,
+        b: "hello".to_string(),
+    });
+    let other_var = 42;
+    *other_var += 1;
+
+    let counter_plus_one = $derived(counter + 1);
+
+    counter += 1;
+
+    struct MyStruct {
+        a: i32,
+        b: String,
+    }
+
+    fn increment($mut counter) {
+        *counter += 1;
+        add(*counter, 5);
+    }
+
+    fn add<T: std::ops::Add<Output = T>>(a: T, b: T) -> T {
+        a + b
+    }
+
+    fn update_struct($mut my_struct, $mut counter, inc: bool) {
+        if inc {
+            increment(counter);
+        } else {
+            $validate(counter); // Tell compiler that counter hasn't changed
+        }
+        my_struct.a += *counter;
+        my_struct.b = format!("Count is {}", *counter);
+    }
+</script>
+
+<div>
+    <button onclick={increment}>
+        Count: {counter}
+    </button>
+    <button onclick={|$my_struct, $counter| update_struct(my_struct, counter, true)}>
+        Struct A: {my_struct.a} (Click to update)
+    </button>
+    <Button
+        text={my_struct.b}
+        func={|$counter, new_val| {
+            *counter = new_val;
+        }}
+    />
+    <p>Count: {counter}</p>
+    <p>Struct B: {my_struct.b}</p>
+    {#if counter > 5}
+        <p>Counter is greater than 5!</p>
+    {:else}
+        <p>Counter is 5 or less.</p>
+    {/if}
+    {#each (0..counter).collect::<Vec<i32>>() as num}
+        <p>Number: {num}</p>
+    {/each}
+    <div>
+        <p>Counter plus one: {counter_plus_one}</p>
+    </div>
+</div>

@@ -1,0 +1,9 @@
+<script>
+    struct $state {
+        id: String = $param(),
+    }
+</script>
+
+<div>
+    {id}
+</div>

@@ -1,0 +1,22 @@
+<script>
+    let (text, func) = $props(String, fn());
+
+    let button_counter = $state(0);
+</script>
+
+<div>
+    <button onclick={|$button_counter| {*button_counter += 1} }>
+        {format!("{}: {}", text, *button_counter)}
+    </button>
+    <button onclick={|$button_counter| {func(*button_counter)} }>
+        Set parent
+    </button>
+</div>
+
+<style>
+    button {
+        padding: 0.5em 1em;
+        font-size: 1em;
+        cursor: pointer;
+    }
+</style>

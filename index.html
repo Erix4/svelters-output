@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>svelters-output</title>
+    <style>
+        p {
+            margin: 0;
+        }
+    </style>
+    <script type="module">
+        import init, { mount } from './pkg/svelters_output.js';
+        init().then(() => {
+            mount();
+        });
+
+        // Hot reload WebSocket
+        const ws = new WebSocket(`ws://${window.location.host}/ws`);
+        ws.onmessage = () => {
+            console.log('Reloading page...');
+            window.location.reload();
+        };
+        ws.onclose = () => {
+            console.log('WebSocket closed, attempting to reconnect...');
+            setTimeout(() => window.location.reload(), 1000);
+        };
+        ws.onopen = () => {
+            console.log('Hot reload connected');
+        };
+    </script>
+</head>
+
+<body>
+</body>
+
+</html>

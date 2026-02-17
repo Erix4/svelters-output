@@ -1,0 +1,6 @@
+<script>
+	let { children } = $props();
+</script>
+
+<h1>Title</h1>
+{@render children()}

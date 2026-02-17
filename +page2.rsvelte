@@ -69,7 +69,9 @@
         <p>Counter is 5 or less.</p>
     {/if}
 
-    {#each (0..counter).collect::<Vec<i32>>() as num}
+    <!-- Items in an each block must implement or derive Hash -->
+    <!-- User must provide Vec or Iterator, if a Vec it will be converted to Iterator -->
+    {#each (0..counter) as num}
         <p>Number: {num}</p>
     {/each}
 

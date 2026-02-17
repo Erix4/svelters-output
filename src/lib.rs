@@ -1,9 +1,15 @@
 use std::{
-    cell::RefCell, ops::{Deref, DerefMut}, sync::atomic::{AtomicU64, Ordering::SeqCst}, vec
+    cell::RefCell,
+    ops::{Deref, DerefMut},
+    sync::atomic::{AtomicU64, Ordering::SeqCst},
+    vec,
 };
 
-use wasm_bindgen::{JsCast, JsValue, prelude::{Closure, wasm_bindgen}};
-use web_sys::Comment;
+use wasm_bindgen::{
+    prelude::{wasm_bindgen, Closure},
+    JsCast, JsValue,
+};
+use web_sys::{Comment, Node};
 
 use crate::state::Page;
 
@@ -40,8 +46,119 @@ impl<T> DerefMut for MutateTracker<T> {
 
 pub struct IfElement<T, U> {
     pub comment: Comment,
+    pub condition: bool,
     pub if_content: T,
     pub else_content: U,
+}
+
+/// Represents the content of an each block, which may have multiple instances
+/// Each instance is identified by a unique key produced by a hash function
+pub struct EachElement<T> {
+    pub comment: Comment,
+    pub content: Vec<(u64, T)>,
+}
+
+fn hash_item<T: std::hash::Hash>(item: &T) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = DefaultHasher::new();
+    item.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn diff_each_content<T: std::hash::Hash, U: Clone>(
+    existing: &Vec<(u64, U)>,
+    new_items: Vec<T>,
+    mount_anchor: Comment,
+    unmount_fn: impl Fn(&U) -> U,
+    create_fn: impl Fn(&T) -> Result<U, JsValue>,
+    mount_fn: impl Fn(&U, &Node) -> Result<(), JsValue>, // returns the new anchor after mounting
+) -> Result<Vec<(u64, U)>, JsValue>
+where
+    Node: From<U>,
+{
+    let new_hashes: Vec<u64> = new_items.iter().map(|item| hash_item(item)).collect();
+
+    // Find head and tail of middle batch
+    let mut head = 0;
+    while head < existing.len() && head < new_hashes.len() && existing[head].0 == new_hashes[head] {
+        head += 1;
+    }
+    let mut tail = 0;
+    while tail < existing.len() - head
+        && tail < new_hashes.len() - head
+        && existing[existing.len() - 1 - tail].0 == new_hashes[new_hashes.len() - 1 - tail]
+    {
+        tail += 1;
+    }
+
+    // Build a map of new hashes to their indices for quick lookup
+    let mut new_item_source_map = std::collections::HashMap::new();
+    for i in head..(new_hashes.len() - tail) {
+        new_item_source_map.insert(new_hashes[i], i);
+    }
+
+    // Create a new array to hold the source indices for the new items
+    let mut new_item_source_array = vec![None; new_hashes.len()];
+    for i in 0..head {
+        new_item_source_array[i] = Some(i);
+    }
+    for i in head..(existing.len() - tail) {
+        if let Some(&new_index) = new_item_source_map.get(&existing[i].0) {
+            new_item_source_array[new_index] = Some(i);
+        } else {
+            // Unmount code for removed item
+            unmount_fn(&existing[i].1);
+        }
+    }
+    for i in (new_hashes.len() - tail)..new_hashes.len() {
+        new_item_source_array[i] = Some(existing.len() - (new_hashes.len() - i));
+    }
+
+    // Find longest increasing subsequence of source indices in new_item_source_array
+    let mut subs = vec![Vec::new()]; // list of all increasing subsequences found so far
+    let mut last_index: i32 = -1; // index of the last item in the longest increasing subsequence
+    for (new_index, source_index_opt) in new_item_source_array.iter().enumerate() {
+        let current_sub = subs.last_mut().unwrap();
+        if let Some(source_index) = source_index_opt {
+            if current_sub.is_empty() || *source_index as i32 > last_index {
+                current_sub.push(new_index);
+            } else {
+                subs.push(vec![new_index]);
+            }
+            last_index = *source_index as i32;
+        }
+    }
+    let longest_sub = subs
+        .into_iter()
+        .max_by_key(|sub| sub.len())
+        .unwrap_or_default();
+
+    let mut anchor: Node = mount_anchor.into();
+    let mut new_list = Vec::new();
+    for (new_index, source_index_opt) in new_item_source_array.into_iter().enumerate().rev() {
+        if let Some(source_index) = source_index_opt {
+            if !longest_sub.contains(&new_index) {
+                // Move existing item to correct position
+                let item = unmount_fn(&existing[source_index].1);
+                mount_fn(&item, &anchor)?;
+                new_list.push((existing[source_index].0, item.clone()));
+                anchor = item.into();
+            } else {
+                // Item is already in correct position, just update anchor for next iteration
+                anchor = existing[source_index].1.clone().into();
+                new_list.push((existing[source_index].0, existing[source_index].1.clone()));
+            }
+        } else {
+            // Mount new item
+            let new_item = create_fn(&new_items[new_index])?;
+            mount_fn(&new_item, &anchor)?;
+            new_list.push((new_hashes[new_index], new_item.clone()));
+            anchor = new_item.into();
+        }
+    }
+    Ok(new_list.into_iter().rev().collect())
 }
 
 pub fn prepend_path(base: &Vec<u32>, addition: u32) -> Vec<u32> {
@@ -50,7 +167,11 @@ pub fn prepend_path(base: &Vec<u32>, addition: u32) -> Vec<u32> {
     out
 }
 
-pub fn add_listener(el: &web_sys::Element, event: &str, target_path: Vec<u32>) -> Result<(), JsValue> {
+pub fn add_listener(
+    el: &web_sys::Element,
+    event: &str,
+    target_path: Vec<u32>,
+) -> Result<(), JsValue> {
     let closure = Closure::wrap(Box::new(move |e: web_sys::Event| {
         handle_event(e, target_path.clone());
     }) as Box<dyn FnMut(_)>);
@@ -113,9 +234,11 @@ pub fn handle_event(e: web_sys::Event, target: Vec<u32>) {
     let _ = PAGE.with(|page| {
         let page = &mut *page.borrow_mut();
         let page = page.as_mut().expect("Page component should be initialized");
-        page.proc(e, target, ()).or_else(|e| {
-            web_sys::console::error_1(&format!("Error processing event: {:?}", e).into());
-            Err(e)
-        }).ok();
+        page.proc(e, target, ())
+            .or_else(|e| {
+                web_sys::console::error_1(&format!("Error processing event: {:?}", e).into());
+                Err(e)
+            })
+            .ok();
     });
 }

@@ -1,8 +1,14 @@
 use wasm_bindgen::JsValue;
 use web_sys::Element;
 
-use crate::{add_listener, prepend_path, IfElement, MutateTracker, Route, DIRTY_FLAGS};
-use std::{sync::atomic::Ordering::SeqCst, vec};
+use crate::{
+    DIRTY_FLAGS, EachElement, IfElement, MutateTracker, Route, add_listener, diff_each_content, prepend_path
+};
+use std::{
+    hash::{DefaultHasher, Hash, Hasher},
+    sync::atomic::Ordering::SeqCst,
+    vec,
+};
 
 // User generated agnostic code
 struct MyStruct {
@@ -144,7 +150,7 @@ pub struct Page {
         Element,
         Element,                     // 4
         IfElement<Element, Element>, // 5 - #if block
-        Vec<Element>,                // 6 - #each
+        EachElement<Element>,      // 6 - #each
         Element,
         Element, // 8
     ),
@@ -160,10 +166,6 @@ pub struct Page {
 
     // Child component local state:
     button_1: Button,
-
-    // Fragment state:
-    fragment1: bool,  // whether #if block is currently rendered
-    fragment2: usize, // number of items currently rendered in #each block
 }
 
 impl Page {
@@ -210,9 +212,9 @@ impl Page {
         el5_else.set_inner_html("Counter is 5 or less.");
         el0.insert_before(&el5_else, Some(&el5))?;
 
-        el0.remove();
-
         // 6 - #each block
+        let el6 = document.create_comment("");
+        el0.append_child(&el6)?;
 
         let el7 = document.create_element("div")?;
         el0.append_child(&el7)?;
@@ -232,10 +234,14 @@ impl Page {
             el4,
             IfElement {
                 comment: el5,
+                condition: false, // needs to be initialized to something, will be updated in apply
                 if_content: el5_if,
                 else_content: el5_else,
             },
-            vec![], // #each block
+            EachElement {
+                comment: el6,
+                content: vec![],
+            },
             el7,
             el8,
         );
@@ -252,8 +258,6 @@ impl Page {
             ),
             counter_plus_one: 1, // needs to be initialized to something, will be updated in init
             button_1: Button::new(prepend_path(&parent_path, 3), c1)?,
-            fragment1: false,
-            fragment2: 0,
         };
 
         new_page.init();
@@ -341,8 +345,8 @@ impl Page {
 
             // #if block
             let frag1_eval = *self.counter > 5;
-            if frag1_eval != self.fragment1 {
-                if self.fragment1 {
+            if frag1_eval != self.elements.5.condition {
+                if self.elements.5.condition {
                     self.elements.5.if_content.remove();
                     self.elements.0.insert_before(
                         &self.elements.5.else_content,
@@ -357,29 +361,31 @@ impl Page {
                         Some(&self.elements.5.comment),
                     )?;
                 }
-                self.fragment1 = frag1_eval;
+                self.elements.5.condition = frag1_eval;
             }
 
             // #each block
-            let new_fragment2_list = (0..*self.counter).collect::<Vec<i32>>();
-            if new_fragment2_list.len() != self.fragment2 {
-                // TODO: reimplement with keyed diffing algorithm to avoid unmounting/mounting unchanged items
-
-                // unmount old
-                self.elements
-                    .6
-                    .drain(..)
-                    .try_for_each(|el| self.elements.0.remove_child(&el).map(|_| ()))?;
-
-                // mount new
-                for num in new_fragment2_list.iter() {
+            // User expression: (0..counter)
+            self.elements.6.content = diff_each_content(
+                &self.elements.6.content,
+                (0..*self.counter).collect::<Vec<i32>>(),
+                self.elements.6.comment.clone(),
+                |el| {
+                    el.remove();
+                    el.clone()
+                },
+                |item| {
                     let new_el = document.create_element("p")?;
-                    new_el.set_inner_html(&format!("Number: {}", num));
-                    self.elements.0.append_child(&new_el)?;
-                    self.elements.6.push(new_el);
+                    new_el.set_inner_html(&format!("Number: {}", item));
+                    Ok(new_el)
+                },
+                |item, anchor| {
+                    self.elements
+                        .0
+                        .insert_before(item, Some(anchor))?;
+                    Ok(())
                 }
-                self.fragment2 = new_fragment2_list.len();
-            }
+            )?;
         }
 
         // my_struct changed

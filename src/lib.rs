@@ -44,11 +44,10 @@ impl<T> DerefMut for MutateTracker<T> {
     }
 }
 
-pub struct IfElement<T, U> {
+pub struct IfElement<T> {
     pub comment: Comment,
-    pub condition: bool,
-    pub if_content: T,
-    pub else_content: U,
+    pub active_branch: u64,
+    pub content_enum: T,
 }
 
 /// Represents the content of an each block, which may have multiple instances

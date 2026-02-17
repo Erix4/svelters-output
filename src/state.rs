@@ -129,6 +129,11 @@ impl Router {
     }
 }*/
 
+enum IfContent {
+    If(Element),
+    Else(Element),
+}
+
 /// Global state for the page component
 ///
 /// Each component has the following sections recursively:
@@ -148,7 +153,7 @@ pub struct Page {
         Element,
         Element,
         Element,                     // 4
-        IfElement<Element, Element>, // 5 - #if block
+        IfElement<IfContent>, // 5 - #if block
         EachElement<Element>,      // 6 - #each
         Element,
         Element, // 8
@@ -207,10 +212,6 @@ impl Page {
         let el5_if = document.create_element("p")?;
         el5_if.set_inner_html("Counter is greater than 5!");
 
-        let el5_else = document.create_element("p")?;
-        el5_else.set_inner_html("Counter is 5 or less.");
-        el0.insert_before(&el5_else, Some(&el5))?;
-
         // 6 - #each block
         let el6 = document.create_comment("");
         el0.append_child(&el6)?;
@@ -233,9 +234,8 @@ impl Page {
             el4,
             IfElement {
                 comment: el5,
-                condition: false, // needs to be initialized to something, will be updated in apply
-                if_content: el5_if,
-                else_content: el5_else,
+                active_branch: 0,
+                content_enum: IfContent::If(el5_if),
             },
             EachElement {
                 comment: el6,
@@ -344,24 +344,35 @@ impl Page {
                 .set_inner_html(&format!("Count: {}", *self.counter));
 
             // #if block
-            let frag1_eval = *self.counter > 5;
-            if frag1_eval != self.elements.5.condition {
-                if self.elements.5.condition {
-                    self.elements.5.if_content.remove();
-                    self.elements.0.insert_before(
-                        &self.elements.5.else_content,
-                        Some(&self.elements.5.comment),
-                    )?;
-                } else {
+            let if_active_branch = if *self.counter > 5 { 0 } else { 1 };
+            if if_active_branch != self.elements.5.active_branch {
+                // Remove old content
+                match self.elements.5.content_enum {
+                    IfContent::If(ref old_if) => {
+                        old_if.remove();
+                    }
+                    IfContent::Else(ref old_else) => {
+                        old_else.remove();
+                    }
+                }
+
+                // Insert new content
+                self.elements.5.active_branch = if_active_branch;
+                self.elements.5.content_enum = if if_active_branch == 0 {
+                    let new_if = document.create_element("p")?;
+                    new_if.set_inner_html("Counter is greater than 5!");
                     self.elements
                         .0
-                        .remove_child(&self.elements.5.else_content)?;
-                    self.elements.0.insert_before(
-                        &self.elements.5.if_content,
-                        Some(&self.elements.5.comment),
-                    )?;
-                }
-                self.elements.5.condition = frag1_eval;
+                        .insert_before(&new_if, Some(&self.elements.5.comment))?;
+                    IfContent::If(new_if)
+                } else {
+                    let new_else = document.create_element("p")?;
+                    new_else.set_inner_html("Counter is 5 or less.");
+                    self.elements
+                        .0
+                        .insert_before(&new_else, Some(&self.elements.5.comment))?;
+                    IfContent::Else(new_else)
+                };
             }
 
             // #each block

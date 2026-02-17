@@ -60,7 +60,7 @@ pub struct EachElement<T> {
 
 fn hash_item<T: std::hash::Hash>(item: &T) -> u64 {
     use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
+    use std::hash::Hasher;
 
     let mut hasher = DefaultHasher::new();
     item.hash(&mut hasher);
@@ -181,11 +181,11 @@ pub fn add_listener(
 }
 
 /// Each route maps a path pattern to a component constructor
-pub struct Route {
+/*pub struct Route {
     pattern: &'static str,
     // Params extracted from URL (e.g., /users/:id)
     param_names: &'static [&'static str],
-}
+}*/
 
 /// Simple pattern matching: "/users/:id" matches "/users/42"
 pub fn match_pattern(

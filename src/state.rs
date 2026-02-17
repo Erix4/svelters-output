@@ -2,10 +2,9 @@ use wasm_bindgen::JsValue;
 use web_sys::Element;
 
 use crate::{
-    DIRTY_FLAGS, EachElement, IfElement, MutateTracker, Route, add_listener, diff_each_content, prepend_path
+    DIRTY_FLAGS, EachElement, IfElement, MutateTracker, add_listener, diff_each_content, prepend_path
 };
 use std::{
-    hash::{DefaultHasher, Hash, Hasher},
     sync::atomic::Ordering::SeqCst,
     vec,
 };
@@ -332,9 +331,10 @@ impl Page {
         }
 
         // generate patches based on dirty flags
+        let flag_snapshot = DIRTY_FLAGS.load(SeqCst);
 
         // counter changed
-        if DIRTY_FLAGS.load(SeqCst) & 1 << 0 != 0 {
+        if flag_snapshot & 1 << 0 != 0 {
             self.elements
                 .1
                 .set_inner_html(&format!("Counter: {}", *self.counter));
@@ -389,7 +389,7 @@ impl Page {
         }
 
         // my_struct changed
-        if DIRTY_FLAGS.load(SeqCst) & 1 << 1 != 0 {
+        if flag_snapshot & 1 << 1 != 0 {
             self.elements
                 .2
                 .set_inner_html(&format!("Struct A: {} (Click to update)", self.my_struct.a));
@@ -399,13 +399,11 @@ impl Page {
         }
 
         // counter_plus_one changed (derived)
-        if DIRTY_FLAGS.load(SeqCst) & 1 << 3 != 0 {
+        if flag_snapshot & 1 << 3 != 0 {
             self.elements
                 .8
                 .set_inner_html(&format!("Counter plus one: {}", self.counter_plus_one));
         }
-
-        let flag_snapshot = DIRTY_FLAGS.load(SeqCst);
 
         // Propagate to children
 
@@ -528,7 +526,7 @@ impl Button {
     }
 }
 
-struct NotFoundPage {
+/*struct NotFoundPage {
     // Element array:
     elements: (Element,),
     // Prop state: none
@@ -590,4 +588,4 @@ impl UserPage {
             user_id,
         })
     }
-}
+}*/

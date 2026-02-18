@@ -1,13 +1,11 @@
 use wasm_bindgen::JsValue;
-use web_sys::Element;
+use web_sys::{Element, Text};
 
 use crate::{
-    DIRTY_FLAGS, EachElement, IfElement, MutateTracker, add_listener, diff_each_content, prepend_path
+    add_listener, diff_each_content, prepend_path, EachElement, IfElement, MutateTracker,
+    DIRTY_FLAGS,
 };
-use std::{
-    sync::atomic::Ordering::SeqCst,
-    vec,
-};
+use std::{sync::atomic::Ordering::SeqCst, vec};
 
 // User generated agnostic code
 struct MyStruct {
@@ -130,7 +128,7 @@ impl Router {
 }*/
 
 enum IfContent {
-    If(Element),
+    If((Element, Text, Text)),
     Else(Element),
 }
 
@@ -152,11 +150,11 @@ pub struct Page {
         Element,
         Element,
         Element,
-        Element,                     // 4
+        Element,              // 4
         IfElement<IfContent>, // 5 - #if block
-        EachElement<Element>,      // 6 - #each
+        EachElement<Element>, // 6 - #each
         Element,
-        Element, // 8
+        Element, // 
     ),
 
     // Prop state: none
@@ -210,7 +208,10 @@ impl Page {
         el0.append_child(&el5)?;
 
         let el5_if = document.create_element("p")?;
-        el5_if.set_inner_html("Counter is greater than 5!");
+        let el5_text_1 = document.create_text_node("Counter is greater than 5! ");
+        let el5_text_2 = document.create_text_node(""); // for my_struct.a value
+        el5_if.append_child(&el5_text_1)?;
+        el5_if.append_child(&el5_text_2)?;
 
         // 6 - #each block
         let el6 = document.create_comment("");
@@ -235,7 +236,7 @@ impl Page {
             IfElement {
                 comment: el5,
                 active_branch: 0,
-                content_enum: IfContent::If(el5_if),
+                content_enum: IfContent::If((el5_if, el5_text_1, el5_text_2)),
             },
             EachElement {
                 comment: el6,
@@ -349,7 +350,7 @@ impl Page {
                 // Remove old content
                 match self.elements.5.content_enum {
                     IfContent::If(ref old_if) => {
-                        old_if.remove();
+                        old_if.0.remove();
                     }
                     IfContent::Else(ref old_else) => {
                         old_else.remove();
@@ -358,20 +359,27 @@ impl Page {
 
                 // Insert new content
                 self.elements.5.active_branch = if_active_branch;
-                self.elements.5.content_enum = if if_active_branch == 0 {
-                    let new_if = document.create_element("p")?;
-                    new_if.set_inner_html("Counter is greater than 5!");
-                    self.elements
-                        .0
-                        .insert_before(&new_if, Some(&self.elements.5.comment))?;
-                    IfContent::If(new_if)
-                } else {
-                    let new_else = document.create_element("p")?;
-                    new_else.set_inner_html("Counter is 5 or less.");
-                    self.elements
-                        .0
-                        .insert_before(&new_else, Some(&self.elements.5.comment))?;
-                    IfContent::Else(new_else)
+                self.elements.5.content_enum = match if_active_branch {
+                    0 => {
+                        let new_if = document.create_element("p")?;
+                        let el5_text_1 = document.create_text_node("Counter is greater than 5! ");
+                        let el5_text_2 =
+                            document.create_text_node(&format!("{}", self.my_struct.a)); // for my_struct.a value
+                        new_if.append_child(&el5_text_1)?;
+                        new_if.append_child(&el5_text_2)?;
+                        self.elements
+                            .0
+                            .insert_before(&new_if, Some(&self.elements.5.comment))?;
+                        IfContent::If((new_if, el5_text_1, el5_text_2))
+                    }
+                    _ => {
+                        let new_else = document.create_element("p")?;
+                        new_else.set_inner_html("Counter is 5 or less.");
+                        self.elements
+                            .0
+                            .insert_before(&new_else, Some(&self.elements.5.comment))?;
+                        IfContent::Else(new_else)
+                    }
                 };
             }
 
@@ -391,11 +399,9 @@ impl Page {
                     Ok(new_el)
                 },
                 |item, anchor| {
-                    self.elements
-                        .0
-                        .insert_before(item, Some(anchor))?;
+                    self.elements.0.insert_before(item, Some(anchor))?;
                     Ok(())
-                }
+                },
             )?;
         }
 
@@ -407,6 +413,13 @@ impl Page {
             self.elements
                 .4
                 .set_inner_html(&format!("Struct B: {}", self.my_struct.b));
+
+            match self.elements.5.content_enum {
+                IfContent::If((_, _, ref el)) => {
+                    el.set_text_content(Some(&format!("{}", self.my_struct.a)));
+                }
+                _ => {}
+            }
         }
 
         // counter_plus_one changed (derived)

@@ -64,7 +64,7 @@
     <p>Struct B: {my_struct.b}</p>
 
     {#if counter > 5}
-        <p>Counter is greater than 5!</p>
+        <p>Counter is greater than 5! {my_struct.a}</p>
     {:else}
         <p>Counter is 5 or less.</p>
     {/if}

@@ -5,6 +5,7 @@ use crate::{
     add_listener, diff_each_content, prepend_path, EachElement, IfElement, MutateTracker,
     DIRTY_FLAGS,
 };
+use core::panic;
 use std::{sync::atomic::Ordering::SeqCst, vec};
 
 // User generated agnostic code
@@ -154,7 +155,7 @@ pub struct Page {
         IfElement<IfContent>, // 5 - #if block
         EachElement<Element>, // 6 - #each
         Element,
-        Element, // 
+        Element, //
     ),
 
     // Prop state: none
@@ -186,45 +187,47 @@ impl Page {
         let body = document.body().expect("document should have a body");
 
         let el0 = document.create_element("div")?;
-        body.append_child(&el0)?;
-
         let el1 = document.create_element("button")?;
-        el0.append_child(&el1)?;
-
         let el2 = document.create_element("button")?;
-        el0.append_child(&el2)?;
-
         let c1 = document.create_element("div")?;
-        el0.append_child(&c1)?;
-
         let el3 = document.create_element("p")?;
-        el0.append_child(&el3)?;
-
         let el4 = document.create_element("p")?;
-        el0.append_child(&el4)?;
-
-        // #if block
-        let el5 = document.create_comment("");
-        el0.append_child(&el5)?;
-
+        let comment = document.create_comment("");
         let el5_if = document.create_element("p")?;
         let el5_text_1 = document.create_text_node("Counter is greater than 5! ");
         let el5_text_2 = document.create_text_node(""); // for my_struct.a value
-        el5_if.append_child(&el5_text_1)?;
-        el5_if.append_child(&el5_text_2)?;
-
-        // 6 - #each block
-        let el6 = document.create_comment("");
-        el0.append_child(&el6)?;
-
+        let el5 = IfElement {
+            comment,
+            active_branch: 0,
+            content_enum: IfContent::If((el5_if, el5_text_1, el5_text_2)),
+        };
+        let comment = document.create_comment("");
+        let el6 = EachElement {
+            comment,
+            content: vec![],
+        };
         let el7 = document.create_element("div")?;
-        el0.append_child(&el7)?;
-
         let el8 = document.create_element("p")?;
+
+        body.append_child(&el0)?;
+        el0.append_child(&el1)?;
+        el0.append_child(&el2)?;
+        el0.append_child(&c1)?;
+        el0.append_child(&el3)?;
+        el0.append_child(&el4)?;
+        el0.append_child(&el5.comment)?; // #if block
+        match &el5.content_enum {
+            IfContent::If((ref el5_if, el5_text_1, el5_text_2)) => {
+                el0.insert_before(&el5_if, Some(&el5.comment))?; // placeholder for #if content
+                el5_if.append_child(&el5_text_1)?;
+                el5_if.append_child(&el5_text_2)?;
+            }
+            _ => panic!("Initial content for #if block must be the if branch"),
+        }
+        el0.append_child(&el6.comment)?; // #each block
+        el0.append_child(&el7)?;
         el7.append_child(&el8)?;
-
         add_listener(&el1, "click", prepend_path(&parent_path, 1))?;
-
         add_listener(&el2, "click", prepend_path(&parent_path, 2))?;
 
         let elements = (
@@ -233,15 +236,8 @@ impl Page {
             el2,
             el3,
             el4,
-            IfElement {
-                comment: el5,
-                active_branch: 0,
-                content_enum: IfContent::If((el5_if, el5_text_1, el5_text_2)),
-            },
-            EachElement {
-                comment: el6,
-                content: vec![],
-            },
+            el5,
+            el6,
             el7,
             el8,
         );
@@ -350,7 +346,10 @@ impl Page {
                 // Remove old content
                 match self.elements.5.content_enum {
                     IfContent::If(ref old_if) => {
-                        old_if.0.remove();
+                        let (node_0, node_1, node_2) = old_if;
+                        node_0.remove();
+                        node_1.remove();
+                        node_2.remove();
                     }
                     IfContent::Else(ref old_else) => {
                         old_else.remove();
@@ -358,6 +357,13 @@ impl Page {
                 }
 
                 // Insert new content
+                web_sys::console::log_1(
+                    &format!(
+                        "Switching #if block to branch {}, counter value: {}",
+                        if_active_branch, *self.counter
+                    )
+                    .into(),
+                );
                 self.elements.5.active_branch = if_active_branch;
                 self.elements.5.content_enum = match if_active_branch {
                     0 => {
@@ -390,16 +396,20 @@ impl Page {
                 (0..*self.counter).collect::<Vec<i32>>(),
                 self.elements.6.comment.clone(),
                 |el| {
-                    el.remove();
-                    el.clone()
+                    let node_1 = el.clone();
+                    node_1.remove();
+                    node_1
                 },
                 |item| {
-                    let new_el = document.create_element("p")?;
-                    new_el.set_inner_html(&format!("Number: {}", item));
-                    Ok(new_el)
+                    let node_1 = document.create_element("p")?;
+                    node_1.set_inner_html(&format!("Number: {}", item));
+                    Ok(node_1)
                 },
                 |item, anchor| {
-                    self.elements.0.insert_before(item, Some(anchor))?;
+                    // For each blocks with multiple child items, it might look like:
+                    // let (node_1, node_2) = item; // destructure tuple from create_fn
+                    let node_1 = item;
+                    self.elements.0.insert_before(node_1, Some(anchor))?;
                     Ok(())
                 },
             )?;
@@ -415,8 +425,10 @@ impl Page {
                 .set_inner_html(&format!("Struct B: {}", self.my_struct.b));
 
             match self.elements.5.content_enum {
-                IfContent::If((_, _, ref el)) => {
-                    el.set_text_content(Some(&format!("{}", self.my_struct.a)));
+                IfContent::If(ref if_content) => {
+                    if_content
+                        .2
+                        .set_text_content(Some(&format!("{}", self.my_struct.a)));
                 }
                 _ => {}
             }

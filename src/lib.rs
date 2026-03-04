@@ -9,7 +9,7 @@ use wasm_bindgen::{
     prelude::{wasm_bindgen, Closure},
     JsCast, JsValue,
 };
-use web_sys::{Comment, Node};
+use web_sys::{Comment, Element, Node};
 
 use crate::state::Page;
 
@@ -52,9 +52,9 @@ pub struct IfElement<T> {
 
 /// Represents the content of an each block, which may have multiple instances
 /// Each instance is identified by a unique key produced by a hash function
-pub struct EachElement<T> {
+pub struct EachElement<U, T> {
     pub comment: Comment,
-    pub content: Vec<(u64, T)>,
+    pub content: Vec<(u64, U, T)>, // (hash, DOM ref, item)
 }
 
 fn hash_item<T: std::hash::Hash>(item: &T) -> u64 {
@@ -66,18 +66,25 @@ fn hash_item<T: std::hash::Hash>(item: &T) -> u64 {
     hasher.finish()
 }
 
+/// Diffs the existing content of an each block with the new items,
+/// unmounting removed items, mounting new items, and moving existing items as needed to match the new order.
+/// Returns the new list of (hash, content) pairs in the correct order.
+/// 
+/// Uses the Longest Increasing Subsequence algorithm to minimize moves of existing items.
 fn diff_each_content<T: std::hash::Hash, U: Clone>(
-    existing: &Vec<(u64, U)>,
+    existing: &Vec<(u64, U, T)>,
     new_items: Vec<T>,
+    parent: &Node,
     mount_anchor: Comment,
-    unmount_fn: impl Fn(&U) -> U,
+    unmount_fn: impl Fn(&U),
     create_fn: impl Fn(&T) -> Result<U, JsValue>,
-    mount_fn: impl Fn(&U, &Node) -> Result<(), JsValue>, // returns the new anchor after mounting
-) -> Result<Vec<(u64, U)>, JsValue>
+    mount_fn: impl Fn(&Node, &Node, &U) -> Result<(), JsValue>, // returns the new anchor after mounting
+) -> Result<Vec<(u64, U, T)>, JsValue>
 where
     Node: From<U>,
 {
     let new_hashes: Vec<u64> = new_items.iter().map(|item| hash_item(item)).collect();
+    let mut takeable_new_items: Vec<Option<T>> = new_items.into_iter().map(Some).collect();
 
     // Find head and tail of middle batch
     let mut head = 0;
@@ -140,21 +147,25 @@ where
         if let Some(source_index) = source_index_opt {
             if !longest_sub.contains(&new_index) {
                 // Move existing item to correct position
-                let item = unmount_fn(&existing[source_index].1);
-                mount_fn(&item, &anchor)?;
-                new_list.push((existing[source_index].0, item.clone()));
-                anchor = item.into();
+                let new_item = takeable_new_items[new_index].take().unwrap();
+                let contents = &existing[source_index].1;
+                unmount_fn(contents);
+                mount_fn(&parent, &anchor, &contents)?;
+                new_list.push((existing[source_index].0, contents.clone(), new_item));
+                anchor = contents.clone().into();
             } else {
                 // Item is already in correct position, just update anchor for next iteration
+                let new_item = takeable_new_items[new_index].take().unwrap();
                 anchor = existing[source_index].1.clone().into();
-                new_list.push((existing[source_index].0, existing[source_index].1.clone()));
+                new_list.push((existing[source_index].0, existing[source_index].1.clone(), new_item));
             }
         } else {
             // Mount new item
-            let new_item = create_fn(&new_items[new_index])?;
-            mount_fn(&new_item, &anchor)?;
-            new_list.push((new_hashes[new_index], new_item.clone()));
-            anchor = new_item.into();
+            let new_item = takeable_new_items[new_index].take().unwrap();
+            let new_contents = create_fn(&new_item)?;
+            mount_fn(&parent, &anchor, &new_contents)?;
+            new_list.push((new_hashes[new_index], new_contents.clone(), new_item));
+            anchor = new_contents.into();
         }
     }
     Ok(new_list.into_iter().rev().collect())
@@ -214,6 +225,25 @@ pub fn match_pattern(
     Some(params)
 }
 
+trait AddMethod: Fn(&Element) -> Result<(), JsValue> {}
+impl<F: Fn(&Element) -> Result<(), JsValue>> AddMethod for F {}
+
+fn child_append_closure(e: &Element) -> impl AddMethod + '_ {
+    let closure = move |el: &Element| {
+        el.append_child(e)?;
+        Ok(())
+    };
+    closure
+}
+
+fn comment_insert_closure<'a, T>(e: &'a T, p: &'a Element) -> impl AddMethod + 'a where for<'b> &'b Node: From<&'b T> {
+    let closure = move |el: &Element| {
+        p.insert_before(el, Some(e.into()))?;
+        Ok(())
+    };
+    closure
+}
+
 thread_local! {
     pub static PAGE: RefCell<Option<Page>> = RefCell::new(None);
 }
@@ -222,7 +252,13 @@ thread_local! {
 pub fn mount() -> Result<(), JsValue> {
     web_sys::console::log_1(&"Mounting application".into());
     PAGE.with(|page| {
-        *page.borrow_mut() = Some(Page::new(vec![])?);
+        let window = web_sys::window().expect("no global window exists");
+        let document = window.document().expect("no document on window");
+        let body = document.body().expect("document should have a body");
+
+        let mut new_page = Page::new()?;
+        new_page.mount(vec![], &body)?;
+        *page.borrow_mut() = Some(new_page);
         web_sys::console::log_1(&"Page component mounted".into());
         Ok(())
     })

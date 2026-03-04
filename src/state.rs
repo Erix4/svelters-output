@@ -1,9 +1,8 @@
-use wasm_bindgen::JsValue;
+use wasm_bindgen::{JsCast, JsValue};
 use web_sys::{Element, Text};
 
 use crate::{
-    add_listener, diff_each_content, prepend_path, EachElement, IfElement, MutateTracker,
-    DIRTY_FLAGS,
+    AddMethod, DIRTY_FLAGS, EachElement, IfElement, MutateTracker, add_listener, child_append_closure, diff_each_content, hash_item, prepend_path, state
 };
 use core::panic;
 use std::{sync::atomic::Ordering::SeqCst, vec};
@@ -52,7 +51,7 @@ impl ActivePage {
 }
 
 struct Router {
-    elements: (Element),     // element array for router component
+    contents: (Element),     // element array for router component
     active_page: ActivePage, // state for router component
 
     params: Vec<(String, String)>, // extracted route params for active page (name, value)
@@ -71,7 +70,7 @@ impl Router {
         let path = window.location().pathname().unwrap_or_default();
 
         Ok(Self {
-            elements: (el0),
+            contents: (el0),
             active_page: ActivePage::new(&path)?,
             params: vec![],
         })
@@ -120,7 +119,7 @@ impl Router {
             self.active_page = Self::mount_page(
                 route_idx,
                 &self.params,
-                &self.elements.2,
+                &self.contents.2,
             )?;
         }
 
@@ -133,10 +132,44 @@ enum IfContent {
     Else(Element),
 }
 
+struct PageState {
+    // Prop state: none
+
+    // Reactive state:
+    counter: MutateTracker<i32>,        // id: 0
+    my_struct: MutateTracker<MyStruct>, // id: 1
+
+    // Derived state:
+    counter_plus_one: i32,
+}
+
+impl PageState {
+    fn init(&mut self) {
+        //let mut other_var = 42;
+        //other_var += 1;
+
+        *self.counter += 1;
+    }
+
+    // User defined functions for Page
+    fn increment(&mut self) {
+        *self.counter += 1;
+        add(*self.counter, 5);
+    }
+
+    fn update_struct(&mut self, inc: bool) {
+        if inc {
+            self.increment();
+        }
+        self.my_struct.a += *self.counter; // NOTE: no need to deref when a field in a state variable is accessed (it already does it implicitly)
+        self.my_struct.b = format!("Count is {}", *self.counter);
+    }
+}
+
 /// Global state for the page component
 ///
 /// Each component has the following sections recursively:
-/// - Element array: array of all elements in the component, used for patching
+/// - Content array: array of all elements in the component, used for patching
 /// - Prop state: state variables passed from parent component
 /// - Reactive state: state variables that trigger re-renders when changed
 /// - Derived state: state variables that are computed from reactive state
@@ -146,104 +179,30 @@ enum IfContent {
 /// All values except derived are user defined. Derived state is auto-generated.
 pub struct Page {
     // Element array:
-    elements: (
+    contents: (
         Element,
         Element,
         Element,
         Element,
-        Element,              // 4
-        IfElement<IfContent>, // 5 - #if block
-        EachElement<Element>, // 6 - #each
+        Element,                   // 4
+        IfElement<IfContent>,      // 5 - #if block
+        EachElement<Element, i32>, // 6 - #each
         Element,
         Element, //
+        Button,
     ),
 
-    // Prop state: none
-
-    // Reactive state:
-    counter: MutateTracker<i32>,        // id: 0
-    my_struct: MutateTracker<MyStruct>, // id: 1
-
-    // Derived state:
-    counter_plus_one: i32,
-
-    // Child component local state:
-    button_1: Button,
+    state: PageState,
 }
 
 impl Page {
-    fn init(&mut self) {
-        //let mut other_var = 42;
-        //other_var += 1;
-
-        *self.counter += 1;
-    }
-
-    pub fn new(parent_path: Vec<u32>) -> Result<Self, JsValue> {
+    pub fn new() -> Result<Self, JsValue> {
         web_sys::console::log_1(&"Initializing Page component".into());
 
         let window = web_sys::window().expect("no global window exists");
         let document = window.document().expect("no document on window");
-        let body = document.body().expect("document should have a body");
 
-        let el0 = document.create_element("div")?;
-        let el1 = document.create_element("button")?;
-        let el2 = document.create_element("button")?;
-        let c1 = document.create_element("div")?;
-        let el3 = document.create_element("p")?;
-        let el4 = document.create_element("p")?;
-        let comment = document.create_comment("");
-        let el5_if = document.create_element("p")?;
-        let el5_text_1 = document.create_text_node("Counter is greater than 5! ");
-        let el5_text_2 = document.create_text_node(""); // for my_struct.a value
-        let el5 = IfElement {
-            comment,
-            active_branch: 0,
-            content_enum: IfContent::If((el5_if, el5_text_1, el5_text_2)),
-        };
-        let comment = document.create_comment("");
-        let el6 = EachElement {
-            comment,
-            content: vec![],
-        };
-        let el7 = document.create_element("div")?;
-        let el8 = document.create_element("p")?;
-
-        body.append_child(&el0)?;
-        el0.append_child(&el1)?;
-        el0.append_child(&el2)?;
-        el0.append_child(&c1)?;
-        el0.append_child(&el3)?;
-        el0.append_child(&el4)?;
-        el0.append_child(&el5.comment)?; // #if block
-        match &el5.content_enum {
-            IfContent::If((ref el5_if, el5_text_1, el5_text_2)) => {
-                el0.insert_before(&el5_if, Some(&el5.comment))?; // placeholder for #if content
-                el5_if.append_child(&el5_text_1)?;
-                el5_if.append_child(&el5_text_2)?;
-            }
-            _ => panic!("Initial content for #if block must be the if branch"),
-        }
-        el0.append_child(&el6.comment)?; // #each block
-        el0.append_child(&el7)?;
-        el7.append_child(&el8)?;
-        add_listener(&el1, "click", prepend_path(&parent_path, 1))?;
-        add_listener(&el2, "click", prepend_path(&parent_path, 2))?;
-
-        let elements = (
-            el0,
-            el1,
-            el2,
-            el3,
-            el4,
-            el5,
-            el6,
-            el7,
-            el8,
-        );
-
-        let mut new_page = Self {
-            elements,
+        let mut state = PageState {
             counter: MutateTracker::new(0, 0),
             my_struct: MutateTracker::new(
                 MyStruct {
@@ -252,16 +211,46 @@ impl Page {
                 },
                 1,
             ),
-            counter_plus_one: 1, // needs to be initialized to something, will be updated in init
-            button_1: Button::new(prepend_path(&parent_path, 3), c1)?,
+            counter_plus_one: 0,
         };
+        state.init();
 
-        new_page.init();
+        let el0 = document.create_element("div")?;
+        let el1 = document.create_element("button")?;
+        let el2 = document.create_element("button")?;
+        let el3 = document.create_element("p")?;
+        let el4 = document.create_element("p")?;
+        let el5 = if_frag_1_create(&state)?;
+        let el6 = each_frag_1_create(&state)?;
+        let el7 = document.create_element("div")?;
+        let el8 = document.create_element("p")?;
+        let el9 = Button::new()?;
+
+        let contents = (el0, el1, el2, el3, el4, el5, el6, el7, el8, el9);
+
+        let mut new_page = Self { contents, state };
 
         DIRTY_FLAGS.store(u64::MAX, SeqCst); // mark all as dirty for initial render
         new_page.apply()?;
 
         Ok(new_page)
+    }
+
+    pub fn mount(&self, parent_path: Vec<u32>, parent: &Element) -> Result<(), JsValue> {
+        let contents = &self.contents;
+        parent.append_child(&contents.0)?;
+        contents.0.append_child(&contents.1)?;
+        contents.0.append_child(&contents.2)?;
+        contents.9.mount(prepend_path(&parent_path, 9), child_append_closure(&contents.0))?;
+        contents.0.append_child(&contents.3)?;
+        contents.0.append_child(&contents.4)?;
+        if_frag_1_mount(&contents.0, &contents.5)?;
+        each_frag_1_mount(&contents.0, &contents.6)?;
+        contents.0.append_child(&contents.7)?;
+        contents.7.append_child(&contents.8)?;
+        add_listener(&contents.1, "click", prepend_path(&parent_path, 1))?;
+        add_listener(&contents.2, "click", prepend_path(&parent_path, 2))?;
+        Ok(())
     }
 
     /// Process an event and return patches to apply to the DOM
@@ -287,22 +276,50 @@ impl Page {
         let target = target_path.pop().unwrap();
         match e.type_().as_str() {
             "click" if target == 1 => {
-                self.increment();
+                self.state.increment();
             }
             "click" if target == 2 => {
-                (|state: &mut Page| state.update_struct(true))(self);
+                (|state: &mut PageState| state.update_struct(true))(&mut self.state);
             }
+            // target is in button component
             _ if target == 3 => {
-                self.button_1.proc(e, target_path)?;
+                self.contents.9.proc(e, target_path)?;
                 let child_bindable_flags = DIRTY_FLAGS.load(SeqCst);
                 DIRTY_FLAGS.store(0, SeqCst); // reset for parent processing
 
                 // Update bindable props based on child changes
                 if child_bindable_flags & 1 << 1 != 0 {
+                    // Ex.
+                    // state.bindable_prop = self.button_1.some_prop;
+                    // DIRTY_FLAGS.fetch_or(1 << 0, SeqCst); // manually mark parent prop as dirty if it was changed by child
+
                     // Run user defined closure with bound function call
                     (|state: &mut Page, new_val| {
-                        *state.counter = new_val;
-                    })(self, *self.button_1.func_call);
+                        *state.state.counter = new_val;
+                    })(self, *self.contents.9.func_call);
+                }
+            }
+            _ if target == 6 => {
+                // Example of an #each block nested handler
+
+                // Get item specific scoped variable
+                let target = target_path.pop().unwrap();
+                let item = self.contents.6.content[target as usize].2; // get the item from the #each content array based on index
+
+                // Find target element in #each content
+                let target = target_path.pop().unwrap();
+                match e.type_().as_str() {
+                    "click" if target == 1 => {
+                        // User closure:
+                        (|state: &mut Page| {
+                            *state.state.counter = item;
+                        })(self);
+                    }
+                    // Could also be a component in here
+                    _ if target == 3 => {
+                        // Propagate downward & handle bindings just as shown above
+                    }
+                    _ => {}
                 }
             }
             _ => {}
@@ -318,12 +335,12 @@ impl Page {
     /// The flag_exclude parameter is a bitmask of any bindable props that should
     /// not be included in the propagation to children to avoid feedback loops.
     pub fn apply(&mut self) -> Result<(), JsValue> {
-        let window = web_sys::window().expect("no global window exists");
-        let document = window.document().expect("no document on window");
+        let contents = &mut self.contents;
+        let state = &mut self.state;
 
         // update derived
         if DIRTY_FLAGS.load(SeqCst) & 1 << 0 != 0 {
-            self.counter_plus_one = *self.counter + 1;
+            state.counter_plus_one = *state.counter + 1;
             DIRTY_FLAGS.fetch_or(1 << 3, SeqCst);
         }
 
@@ -332,113 +349,35 @@ impl Page {
 
         // counter changed
         if flag_snapshot & 1 << 0 != 0 {
-            self.elements
+            contents
                 .1
-                .set_inner_html(&format!("Counter: {}", *self.counter));
+                .set_inner_html(&format!("Counter: {}", *state.counter));
 
-            self.elements
+            contents
                 .3
-                .set_inner_html(&format!("Count: {}", *self.counter));
-
-            // #if block
-            let if_active_branch = if *self.counter > 5 { 0 } else { 1 };
-            if if_active_branch != self.elements.5.active_branch {
-                // Remove old content
-                match self.elements.5.content_enum {
-                    IfContent::If(ref old_if) => {
-                        let (node_0, node_1, node_2) = old_if;
-                        node_0.remove();
-                        node_1.remove();
-                        node_2.remove();
-                    }
-                    IfContent::Else(ref old_else) => {
-                        old_else.remove();
-                    }
-                }
-
-                // Insert new content
-                web_sys::console::log_1(
-                    &format!(
-                        "Switching #if block to branch {}, counter value: {}",
-                        if_active_branch, *self.counter
-                    )
-                    .into(),
-                );
-                self.elements.5.active_branch = if_active_branch;
-                self.elements.5.content_enum = match if_active_branch {
-                    0 => {
-                        let new_if = document.create_element("p")?;
-                        let el5_text_1 = document.create_text_node("Counter is greater than 5! ");
-                        let el5_text_2 =
-                            document.create_text_node(&format!("{}", self.my_struct.a)); // for my_struct.a value
-                        new_if.append_child(&el5_text_1)?;
-                        new_if.append_child(&el5_text_2)?;
-                        self.elements
-                            .0
-                            .insert_before(&new_if, Some(&self.elements.5.comment))?;
-                        IfContent::If((new_if, el5_text_1, el5_text_2))
-                    }
-                    _ => {
-                        let new_else = document.create_element("p")?;
-                        new_else.set_inner_html("Counter is 5 or less.");
-                        self.elements
-                            .0
-                            .insert_before(&new_else, Some(&self.elements.5.comment))?;
-                        IfContent::Else(new_else)
-                    }
-                };
-            }
-
-            // #each block
-            // User expression: (0..counter)
-            self.elements.6.content = diff_each_content(
-                &self.elements.6.content,
-                (0..*self.counter).collect::<Vec<i32>>(),
-                self.elements.6.comment.clone(),
-                |el| {
-                    let node_1 = el.clone();
-                    node_1.remove();
-                    node_1
-                },
-                |item| {
-                    let node_1 = document.create_element("p")?;
-                    node_1.set_inner_html(&format!("Number: {}", item));
-                    Ok(node_1)
-                },
-                |item, anchor| {
-                    // For each blocks with multiple child items, it might look like:
-                    // let (node_1, node_2) = item; // destructure tuple from create_fn
-                    let node_1 = item;
-                    self.elements.0.insert_before(node_1, Some(anchor))?;
-                    Ok(())
-                },
-            )?;
+                .set_inner_html(&format!("Count: {}", *state.counter));
         }
+
+        if_frag_1_update(&contents.0, &state, &mut contents.5, flag_snapshot)?;
+
+        each_frag_1_update(&contents.0, &state, &mut contents.6, flag_snapshot)?;
 
         // my_struct changed
         if flag_snapshot & 1 << 1 != 0 {
-            self.elements
-                .2
-                .set_inner_html(&format!("Struct A: {} (Click to update)", self.my_struct.a));
-            self.elements
+            self.contents.2.set_inner_html(&format!(
+                "Struct A: {} (Click to update)",
+                state.my_struct.a
+            ));
+            self.contents
                 .4
-                .set_inner_html(&format!("Struct B: {}", self.my_struct.b));
-
-            match self.elements.5.content_enum {
-                IfContent::If(ref if_content) => {
-                    if_content
-                        .2
-                        .set_text_content(Some(&format!("{}", self.my_struct.a)));
-                }
-                _ => {}
-            }
+                .set_inner_html(&format!("Struct B: {}", state.my_struct.b));
         }
 
         // counter_plus_one changed (derived)
         if flag_snapshot & 1 << 3 != 0 {
-            self.elements
+            self.contents
                 .8
-                .set_inner_html(&format!("Counter plus one: {}", self.counter_plus_one));
+                .set_inner_html(&format!("Counter plus one: {}", state.counter_plus_one));
         }
 
         // Propagate to children
@@ -449,11 +388,11 @@ impl Page {
 
             // Update props for button
             if flag_snapshot & 1 << 1 != 0 {
-                self.button_1.text = self.my_struct.b.clone(); // my_struct.b is the given expression
+                self.contents.9.text = self.state.my_struct.b.clone(); // my_struct.b is the given expression
                 DIRTY_FLAGS.fetch_or(1 << 0, SeqCst); // manually mark prop as dirty
             }
 
-            self.button_1.apply()?;
+            self.contents.9.apply()?;
         }
 
         // Restore snapshot
@@ -461,25 +400,240 @@ impl Page {
 
         Ok(())
     }
+}
 
-    // User defined functions for Page
-    fn increment(&mut self) {
-        *self.counter += 1;
-        add(*self.counter, 5);
+fn if_frag_1_branch_1_create(state: &PageState) -> Result<(Element, Text, Text), JsValue> {
+    let window = web_sys::window().expect("no global window exists");
+    let document = window.document().expect("no document on window exists");
+
+    let el5_if = document.create_element("p")?;
+    let el5_text_1 = document.create_text_node("Counter is greater than 5! ");
+    let el5_text_2 = document.create_text_node(&format!("{}", state.my_struct.a));
+
+    Ok((el5_if, el5_text_1, el5_text_2))
+}
+
+fn if_frag_1_branch_1_mount(
+    parent: &web_sys::Node,
+    comment: &web_sys::Comment,
+    contents: &(Element, Text, Text),
+) -> Result<(), JsValue> {
+    parent.insert_before(&contents.0, Some(&comment))?;
+    contents.0.append_child(&contents.1)?;
+    contents.0.append_child(&contents.2)?;
+    Ok(())
+}
+
+fn if_frag_1_branch_1_update(
+    state: &PageState,
+    contents: &(Element, Text, Text),
+    flags: u64,
+) -> Result<(), JsValue> {
+    if flags & 1 << 1 != 0 {
+        contents
+            .2
+            .set_text_content(Some(&format!("{}", state.my_struct.a)));
     }
+    Ok(())
+}
 
-    fn update_struct(&mut self, inc: bool) {
-        if inc {
-            self.increment();
+fn if_frag_1_branch_1_unmount(contents: &(Element, Text, Text)) {
+    let (el5_if, el5_text_1, el5_text_2) = contents;
+    el5_text_1.remove();
+    el5_text_2.remove();
+    el5_if.remove();
+}
+
+fn if_frag_1_branch_2_create(state: &PageState) -> Result<Element, JsValue> {
+    let window = web_sys::window().expect("no global window exists");
+    let document = window.document().expect("no document on window exists");
+
+    let el5_else = document.create_element("p")?;
+    el5_else.set_inner_html("Counter is 5 or less.");
+
+    Ok(el5_else)
+}
+
+fn if_frag_1_branch_2_mount(
+    parent: &web_sys::Node,
+    comment: &web_sys::Comment,
+    contents: &Element,
+) -> Result<(), JsValue> {
+    parent.insert_before(contents, Some(comment))?;
+    Ok(())
+}
+
+fn if_frag_1_branch_2_unmount(contents: &Element) {
+    contents.remove();
+}
+
+fn if_frag_1_create(state: &PageState) -> Result<IfElement<IfContent>, JsValue> {
+    let window = web_sys::window().expect("no global window exists");
+    let document = window.document().expect("no document on window exists");
+
+    let (content_enum, active_branch) = if *state.counter > 5 {
+        (IfContent::If(if_frag_1_branch_1_create(state)?), 0)
+    } else {
+        (IfContent::Else(if_frag_1_branch_2_create(state)?), 1)
+    };
+
+    Ok(IfElement {
+        comment: document.create_comment(""),
+        active_branch,
+        content_enum,
+    })
+}
+
+fn if_frag_1_mount(parent: &web_sys::Node, frag: &IfElement<IfContent>) -> Result<(), JsValue> {
+    parent.append_child(&frag.comment)?;
+    match frag.content_enum {
+        IfContent::If(ref contents) => {
+            if_frag_1_branch_1_mount(parent, &frag.comment, contents)?;
         }
-        self.my_struct.a += *self.counter; // NOTE: no need to deref when a field in a state variable is accessed (it already does it implicitly)
-        self.my_struct.b = format!("Count is {}", *self.counter);
+        IfContent::Else(ref el5_else) => {
+            if_frag_1_branch_2_mount(parent, &frag.comment, el5_else)?;
+        }
     }
+
+    Ok(())
+}
+
+fn if_frag_1_update(
+    parent: &web_sys::Node,
+    state: &PageState,
+    frag: &mut IfElement<IfContent>,
+    flags: u64,
+) -> Result<(), JsValue> {
+    // Check for branch changes
+    if flags & 1 << 0 != 0 {
+        let active_branch = if *state.counter > 5 { 0 } else { 1 };
+        if active_branch != frag.active_branch {
+            // Unmount old content
+            match frag.content_enum {
+                IfContent::If(ref old_if) => {
+                    if_frag_1_branch_1_unmount(old_if);
+                }
+                IfContent::Else(ref old_else) => {
+                    if_frag_1_branch_2_unmount(old_else);
+                }
+            }
+
+            // Mount new content
+            (frag.content_enum, frag.active_branch) = if *state.counter > 5 {
+                let new_if = if_frag_1_branch_1_create(state)?;
+                if_frag_1_branch_1_mount(parent, &frag.comment, &new_if)?;
+                (IfContent::If(new_if), 0)
+            } else {
+                let new_else = if_frag_1_branch_2_create(state)?;
+                if_frag_1_branch_2_mount(parent, &frag.comment, &new_else)?;
+                (IfContent::Else(new_else), 1)
+            };
+        }
+    }
+
+    // Check for changes in content of active branch
+    match &frag.content_enum {
+        IfContent::If(contents) => {
+            if_frag_1_branch_1_update(state, contents, flags)?;
+        }
+        IfContent::Else(_) => {}
+    }
+
+    Ok(())
+}
+
+fn if_frag_1_unmount(frag: &IfElement<IfContent>) {
+    match frag.content_enum {
+        IfContent::If(ref contents) => {
+            if_frag_1_branch_1_unmount(contents);
+        }
+        IfContent::Else(ref el5_else) => {
+            if_frag_1_branch_2_unmount(el5_else);
+        }
+    }
+    frag.comment.remove();
+}
+
+fn each_frag_1_create(state: &PageState) -> Result<EachElement<Element, i32>, JsValue> {
+    let window = web_sys::window().expect("no global window exists");
+    let document = window.document().expect("no document on window exists");
+
+    let content = (0..*state.counter)
+        .map(|item| {
+            let node_1 = document.create_element("p")?;
+            node_1.set_inner_html(&format!("Number: {}", item));
+            Ok((hash_item(&item), node_1, item))
+        })
+        .collect::<Result<Vec<(u64, Element, i32)>, JsValue>>()?;
+
+    Ok(EachElement {
+        comment: document.create_comment(""),
+        content,
+    })
+}
+
+fn each_frag_1_mount(
+    parent: &web_sys::Node,
+    frag: &EachElement<Element, i32>,
+) -> Result<(), JsValue> {
+    parent.append_child(&frag.comment)?;
+    for (_, node_1, _) in frag.content.iter() {
+        parent.insert_before(node_1, Some(&frag.comment))?;
+    }
+    Ok(())
+}
+
+fn each_frag_1_update(
+    parent: &web_sys::Node,
+    state: &PageState,
+    frag: &mut EachElement<Element, i32>,
+    flags: u64,
+) -> Result<(), JsValue> {
+    let window = web_sys::window().expect("no global window exists");
+    let document = window.document().expect("no document on window exists");
+
+    if flags & 1 << 0 != 0 {
+        frag.content = diff_each_content(
+            &frag.content,
+            (0..*state.counter).collect::<Vec<i32>>(),
+            parent,
+            frag.comment.clone(),
+            each_frag_1_content_unmount,
+            |item| {
+                let node_1 = document.create_element("p")?;
+                node_1.set_inner_html(&format!("Number: {}", item));
+                Ok(node_1)
+            },
+            each_frag_1_content_mount,
+        )?;
+    }
+
+    Ok(())
+}
+
+fn each_frag_1_content_unmount(content: &Element) {
+    content.remove();
+}
+
+fn each_frag_1_content_mount(
+    parent: &web_sys::Node,
+    anchor: &web_sys::Node,
+    content: &Element,
+) -> Result<(), JsValue> {
+    parent.insert_before(content, Some(anchor))?;
+    Ok(())
+}
+
+fn each_frag_1_unmount(frag: EachElement<Element, i32>) {
+    for (_, content, _) in frag.content.iter() {
+        each_frag_1_content_unmount(content);
+    }
+    frag.comment.remove();
 }
 
 struct Button {
     // Element array:
-    elements: (Element, Element, Element),
+    contents: (Element, Element, Element),
 
     // Props:
     text: String,
@@ -491,26 +645,19 @@ struct Button {
 }
 
 impl Button {
-    fn new(parent_path: Vec<u32>, el0: Element) -> Result<Self, JsValue> {
+    fn new() -> Result<Self, JsValue> {
         let window = web_sys::window().expect("no global window exists");
         let document = window.document().expect("no document on window");
 
+        let el0 = document.create_element("div")?;
         let el1 = document.create_element("button")?;
-        el0.append_child(&el1)?;
-
         let el2 = document.create_element("button")?;
-        el0.append_child(&el2)?;
-
         el2.set_inner_html("Set parent");
 
-        add_listener(&el1, "click", prepend_path(&parent_path, 1))?;
-
-        add_listener(&el2, "click", prepend_path(&parent_path, 2))?;
-
-        let elements = (el0, el1, el2);
+        let contents = (el0, el1, el2);
 
         let mut new_self = Self {
-            elements,
+            contents,
             text: "".to_string(),
             func_call: MutateTracker::new(0, 1),
             button_counter: MutateTracker::new(0, 0),
@@ -520,6 +667,22 @@ impl Button {
         new_self.apply()?;
 
         Ok(new_self)
+    }
+
+    fn mount(&self, parent_path: Vec<u32>, add_method: impl AddMethod) -> Result<(), JsValue> {
+        add_method(&self.contents.0)?; // add root element to parent using provided method
+        self.contents.0.append_child(&self.contents.1)?;
+        self.contents.0.append_child(&self.contents.2)?;
+
+        add_listener(&self.contents.1, "click", prepend_path(&parent_path, 1))?;
+        add_listener(&self.contents.2, "click", prepend_path(&parent_path, 2))?;
+
+        Ok(())
+    }
+
+    fn unmount(&mut self) {
+        // Removing the root of the component will remove all children, so we only need to remove contents.0
+        self.contents.0.remove();
     }
 
     fn proc(&mut self, e: web_sys::Event, mut target_path: Vec<u32>) -> Result<(), JsValue> {
@@ -545,7 +708,7 @@ impl Button {
 
         // Generate patches for any state changes in this component
         if DIRTY_FLAGS.load(SeqCst) & (1 << 0 | 1 << 1) != 0 {
-            self.elements
+            self.contents
                 .1
                 .set_inner_html(&format!("{}: {}", self.text, *self.button_counter));
         }
@@ -564,7 +727,7 @@ impl Button {
 
 /*struct NotFoundPage {
     // Element array:
-    elements: (Element,),
+    contents: (Element,),
     // Prop state: none
 
     // Reactive state: none
@@ -585,13 +748,13 @@ impl NotFoundPage {
         el0.set_inner_html("404 - Page not found");
         body.append_child(&el0)?;
 
-        Ok(Self { elements: (el0,) })
+        Ok(Self { contents: (el0,) })
     }
 }
 
 struct UserPage {
     // Element array:
-    elements: (Element,),
+    contents: (Element,),
 
     // Params:
     user_id: String,
@@ -620,7 +783,7 @@ impl UserPage {
         body.append_child(&el0)?;
 
         Ok(Self {
-            elements: (el0,),
+            contents: (el0,),
             user_id,
         })
     }

@@ -1,6 +1,6 @@
 use std::{
     cell::RefCell,
-    ops::{Deref, DerefMut},
+    ops::{Add, Deref, DerefMut},
     sync::atomic::{AtomicU64, Ordering::SeqCst},
     vec,
 };
@@ -44,37 +44,41 @@ impl<T> DerefMut for MutateTracker<T> {
     }
 }
 
-struct IfElement<S, T: IfContentTrait<S>> {
-    pub comment: Comment,
-    pub content_enum: T,
-    _phantom: std::marker::PhantomData<S>,
-}
-
-impl<S, T> Clone for IfElement<S, T>
-where
-    T: IfContentTrait<S> + Clone,
-{
-    fn clone(&self) -> Self {
-        Self {
-            comment: self.comment.clone(),
-            content_enum: self.content_enum.clone(),
-            _phantom: std::marker::PhantomData,
-        }
-    }
-}
-
-trait IfContentTrait<State> {
+trait RootFragment {
+    type State;
     type Scope<'a>: Copy; // this can implement Copy 'cause it's all references
 
-    // State, Scope (internal references in nested tuples)
-    fn branch_changed(&self, state: &State, _scope: Self::Scope<'_>, flags: u64) -> bool;
-    fn new(state: &State, scope: Self::Scope<'_>) -> Result<Self, JsValue>
+    fn new(state: &Self::State, scope: Self::Scope<'_>) -> Result<Self, JsValue>
     where
         Self: Sized;
-    fn mount(&self, parent: &Element, comment: &web_sys::Comment) -> Result<(), JsValue>;
+    fn mount(&self, add_method: impl AddMethod) -> Result<(), JsValue>;
     fn proc(
-        &self,
-        state: &State,
+        &mut self,
+        state: &mut Self::State,
+        scope: Self::Scope<'_>,
+        e: web_sys::Event,
+        target_path: Vec<u32>,
+    ) -> Result<(), JsValue>;
+    fn update(
+        &mut self,
+        state: &mut Self::State,
+        scope: Self::Scope<'_>,
+        flags: u64,
+    ) -> Result<(), JsValue>;
+    fn unmount(&self);
+}
+
+trait GenericFragment {
+    type State;
+    type Scope<'a>: Copy; // this can implement Copy 'cause it's all references
+
+    fn new(state: &Self::State, scope: Self::Scope<'_>) -> Result<Self, JsValue>
+    where
+        Self: Sized;
+    fn mount(&self, parent: &Element, add_method: impl AddMethod) -> Result<(), JsValue>;
+    fn proc(
+        &mut self,
+        state: &mut Self::State,
         scope: Self::Scope<'_>,
         e: web_sys::Event,
         target_path: Vec<u32>,
@@ -82,35 +86,91 @@ trait IfContentTrait<State> {
     fn update(
         &mut self,
         parent: &Element,
-        state: &State,
+        state: &Self::State,
         scope: Self::Scope<'_>,
         flags: u64,
     ) -> Result<(), JsValue>;
     fn unmount(&self);
 }
 
-impl<S, T: IfContentTrait<S>> IfElement<S, T> {
-    fn new(state: &S, scope: T::Scope<'_>) -> Result<Self, JsValue> {
+struct IfElement<T: IfContentTrait> {
+    pub comment: Comment,
+    pub content_enum: T,
+}
+
+impl<T> Clone for IfElement<T>
+where
+    T: IfContentTrait + Clone,
+{
+    fn clone(&self) -> Self {
+        Self {
+            comment: self.comment.clone(),
+            content_enum: self.content_enum.clone(),
+        }
+    }
+}
+
+trait IfContentTrait {
+    type State;
+    type Scope<'a>: Copy; // this can implement Copy 'cause it's all references
+
+    // State, Scope (internal references in nested tuples)
+    fn branch_changed(&self, state: &Self::State, _scope: Self::Scope<'_>, flags: u64) -> bool;
+    fn new(state: &Self::State, scope: Self::Scope<'_>) -> Result<Self, JsValue>
+    where
+        Self: Sized;
+    fn mount(&self, parent: &Element, add_method: impl AddMethod) -> Result<(), JsValue>;
+    fn proc(
+        &self,
+        state: &Self::State,
+        scope: Self::Scope<'_>,
+        e: web_sys::Event,
+        target_path: Vec<u32>,
+    ) -> Result<(), JsValue>;
+    fn update(
+        &mut self,
+        parent: &Element,
+        state: &Self::State,
+        scope: Self::Scope<'_>,
+        flags: u64,
+    ) -> Result<(), JsValue>;
+    fn unmount(&self);
+}
+
+impl<T: IfContentTrait> GenericFragment for IfElement<T> {
+    type State = T::State;
+    type Scope<'a> = T::Scope<'a>;
+
+    fn new(state: &Self::State, scope: Self::Scope<'_>) -> Result<Self, JsValue> {
         let window = web_sys::window().expect("no global window exists");
         let document = window.document().expect("no document on window exists");
 
         Ok(Self {
             comment: document.create_comment(""),
             content_enum: T::new(state, scope)?,
-            _phantom: std::marker::PhantomData,
         })
     }
 
-    fn mount(&self, parent: &Element) -> Result<(), JsValue> {
-        parent.append_child(&self.comment)?;
-        self.content_enum.mount(parent, &self.comment)
+    fn mount(&self, parent: &Element, add_method: impl AddMethod) -> Result<(), JsValue> {
+        add_method(&self.comment)?;
+        self.content_enum.mount(parent, comment_insert_closure(&self.comment, parent))
+    }
+
+    fn proc(
+        &mut self,
+        state: &mut Self::State,
+        scope: Self::Scope<'_>,
+        e: web_sys::Event,
+        target_path: Vec<u32>,
+    ) -> Result<(), JsValue> {
+        self.content_enum.proc(state, scope, e, target_path)
     }
 
     fn update(
         &mut self,
         parent: &Element,
-        state: &S,
-        scope: T::Scope<'_>,
+        state: &Self::State,
+        scope: Self::Scope<'_>,
         flags: u64,
     ) -> Result<(), JsValue> {
         if self.content_enum.branch_changed(state, scope, flags) {
@@ -119,7 +179,7 @@ impl<S, T: IfContentTrait<S>> IfElement<S, T> {
 
             // Mount new content
             self.content_enum = T::new(state, scope)?;
-            self.content_enum.mount(parent, &self.comment)?;
+            self.content_enum.mount(parent, comment_insert_closure(&self.comment, parent))?;
         }
         self.content_enum.update(parent, state, scope, flags)
     }
@@ -132,27 +192,27 @@ impl<S, T: IfContentTrait<S>> IfElement<S, T> {
 
 /// Represents the content of an each block, which may have multiple instances
 /// Each instance is identified by a unique key produced by a hash function
-struct EachElement<S, T: EachContentTrait<S>> {
-    pub comment: Comment,
+struct EachElement<T: EachContentTrait> {
+    pub comment: web_sys::Comment,
     pub content: Vec<(u64, T, T::Item)>, // (hash, DOM ref, item)
-    _phantom: std::marker::PhantomData<S>,
 }
 
 /// Functions which the fragment inside an each block must implement to be used as content for an EachElement
-trait EachContentTrait<S> {
+trait EachContentTrait {
+    type State;
     type Scope<'a>: Copy; // this can implement Copy 'cause it's all references
 
     // State, Scope (internal references in nested tuples)
     type Item: std::hash::Hash;
 
-    fn generate(state: &S, scope: Self::Scope<'_>, flags: u64) -> Option<Vec<Self::Item>>;
-    fn new(state: &S, scope: (Self::Scope<'_>, &Self::Item)) -> Result<Self, JsValue>
+    fn generate(state: &Self::State, scope: Self::Scope<'_>, flags: u64) -> Option<Vec<Self::Item>>;
+    fn new(state: &Self::State, scope: (Self::Scope<'_>, &Self::Item)) -> Result<Self, JsValue>
     where
         Self: Sized;
-    fn mount(&self, parent: &Element, anchor: &web_sys::Comment) -> Result<(), JsValue>;
+    fn mount(&self, parent: &Element, add_method: impl AddMethod) -> Result<(), JsValue>;
     fn proc(
         &self,
-        state: &S,
+        state: &Self::State,
         scope: (Self::Scope<'_>, &Self::Item),
         e: web_sys::Event,
         target_path: Vec<u32>,
@@ -160,15 +220,18 @@ trait EachContentTrait<S> {
     fn update(
         &mut self,
         parent: &Element,
-        state: &S,
+        state: &Self::State,
         scope: (Self::Scope<'_>, &Self::Item),
         flags: u64,
     ) -> Result<(), JsValue>;
     fn unmount(&self);
 }
 
-impl<S, T: EachContentTrait<S> + Clone> EachElement<S, T> {
-    fn new(state: &S, scope: T::Scope<'_>) -> Result<Self, JsValue> {
+impl<T: EachContentTrait + Clone> GenericFragment for EachElement<T> {
+    type State = T::State;
+    type Scope<'a> = T::Scope<'a>;
+
+    fn new(state: &Self::State, scope: Self::Scope<'_>) -> Result<Self, JsValue> {
         let window = web_sys::window().expect("no global window exists");
         let document = window.document().expect("no document on window exists");
 
@@ -183,14 +246,26 @@ impl<S, T: EachContentTrait<S> + Clone> EachElement<S, T> {
                     (hash, content, item)
                 })
                 .collect(),
-            _phantom: std::marker::PhantomData,
         })
     }
 
-    fn mount(&self, parent: &Element) -> Result<(), JsValue> {
-        parent.append_child(&self.comment)?;
+    fn mount(&self, parent: &Element, add_method: impl AddMethod) -> Result<(), JsValue> {
+        add_method(&self.comment)?;
         for (_, content, _) in &self.content {
-            content.mount(parent, &self.comment)?;
+            content.mount(parent, &comment_insert_closure(&self.comment, parent))?;
+        }
+        Ok(())
+    }
+
+    fn proc(
+        &mut self,
+        state: &mut Self::State,
+        scope: Self::Scope<'_>,
+        e: web_sys::Event,
+        target_path: Vec<u32>,
+    ) -> Result<(), JsValue> {
+        for (_, content, item) in &self.content {
+            content.proc(state, (scope, item), e.clone(), target_path.clone())?;
         }
         Ok(())
     }
@@ -198,8 +273,8 @@ impl<S, T: EachContentTrait<S> + Clone> EachElement<S, T> {
     fn update(
         &mut self,
         parent: &Element,
-        state: &S,
-        scope: T::Scope<'_>,
+        state: &Self::State,
+        scope: Self::Scope<'_>,
         flags: u64,
     ) -> Result<(), JsValue> {
         // Diff & update each list if necessary
@@ -276,7 +351,7 @@ impl<S, T: EachContentTrait<S> + Clone> EachElement<S, T> {
                         let new_item = takeable_new_items[new_index].take().unwrap();
                         let contents = &self.content[source_index].1;
                         contents.unmount();
-                        contents.mount(parent, &self.comment)?;
+                        contents.mount(parent, comment_insert_closure(&self.comment, parent))?;
                         new_list.push((self.content[source_index].0, contents.clone(), new_item));
                     } else {
                         // Item is already in correct position, just update anchor for next iteration
@@ -291,7 +366,7 @@ impl<S, T: EachContentTrait<S> + Clone> EachElement<S, T> {
                     // Mount new item
                     let new_item = takeable_new_items[new_index].take().unwrap();
                     let new_contents = T::new(state, (scope, &new_item))?;
-                    new_contents.mount(parent, &self.comment)?;
+                    new_contents.mount(parent, comment_insert_closure(&self.comment, parent))?;
                     new_list.push((new_hashes[new_index], new_contents.clone(), new_item));
                 }
             }
@@ -377,23 +452,20 @@ pub fn match_pattern(
     Some(params)
 }
 
-trait AddMethod: Fn(&Element) -> Result<(), JsValue> {}
-impl<F: Fn(&Element) -> Result<(), JsValue>> AddMethod for F {}
+pub trait AddMethod: Fn(&Node) -> Result<(), JsValue> {}
+impl<F: Fn(&Node) -> Result<(), JsValue>> AddMethod for F {}
 
-fn child_append_closure(e: &Element) -> impl AddMethod + '_ {
-    let closure = move |el: &Element| {
-        el.append_child(e)?;
+fn child_append_closure(parent: &Element) -> impl AddMethod + '_ {
+    let closure = move |el: &Node| {
+        parent.append_child(el)?;
         Ok(())
     };
     closure
 }
 
-fn comment_insert_closure<'a, T>(e: &'a T, p: &'a Element) -> impl AddMethod + 'a
-where
-    for<'b> &'b Node: From<&'b T>,
-{
-    let closure = move |el: &Element| {
-        p.insert_before(el, Some(e.into()))?;
+fn comment_insert_closure<'a>(comment: &'a Comment, parent: &'a Element) -> impl AddMethod + 'a {
+    let closure = move |el: &Node| {
+        parent.insert_before(el, Some(comment))?;
         Ok(())
     };
     closure
@@ -411,7 +483,7 @@ pub fn mount() -> Result<(), JsValue> {
         let document = window.document().expect("no document on window");
         let body = document.body().expect("document should have a body");
 
-        let new_page = Page::new(&body)?;
+        let new_page = Page::new(child_append_closure(&body))?;
         *page.borrow_mut() = Some(new_page);
         web_sys::console::log_1(&"Page component mounted".into());
         Ok(())

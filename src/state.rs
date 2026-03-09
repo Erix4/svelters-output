@@ -1,10 +1,7 @@
 use wasm_bindgen::JsValue;
 use web_sys::{Element, Text};
 
-use crate::{
-    add_listener, prepend_path, AddMethod, EachContentTrait, EachElement, IfContentTrait,
-    IfElement, MutateTracker, DIRTY_FLAGS,
-};
+use crate::*;
 use std::{sync::atomic::Ordering::SeqCst, vec};
 
 // User generated agnostic code
@@ -85,13 +82,13 @@ pub struct Page {
 }
 
 impl Page {
-    pub fn new(parent: &Element) -> Result<Self, JsValue> {
+    pub fn new(add_method: impl AddMethod) -> Result<Self, JsValue> {
         web_sys::console::log_1(&"Initializing Page component".into());
 
         let state = PageState::new();
-        let contents = PageRootFrag::new(&state)?;
+        let contents = PageRootFrag::new(&state, ())?;
         let mut new_page = Self { contents, state };
-        new_page.mount(parent)?;
+        new_page.mount(add_method)?;
 
         DIRTY_FLAGS.store(u64::MAX, SeqCst); // mark all as dirty for initial render
         new_page.apply()?;
@@ -99,8 +96,8 @@ impl Page {
         Ok(new_page)
     }
 
-    fn mount(&mut self, parent: &Element) -> Result<(), JsValue> {
-        self.contents.mount(parent)
+    fn mount(&mut self, add_method: impl AddMethod) -> Result<(), JsValue> {
+        self.contents.mount(add_method)
     }
 
     /// Process an event and return patches to apply to the DOM
@@ -126,7 +123,7 @@ impl Page {
             .into(),
         );
         // Event handling
-        self.contents.proc(&mut self.state, e, target_path)?;
+        self.contents.proc(&mut self.state, (), e, target_path)?;
 
         self.apply()?;
 
@@ -149,7 +146,7 @@ impl Page {
         // generate patches based on dirty flags
         let flag_snapshot = DIRTY_FLAGS.load(SeqCst);
 
-        self.contents.update(state, flag_snapshot)?;
+        self.contents.update(state, (), flag_snapshot)?;
 
         // Restore snapshot
         DIRTY_FLAGS.store(flag_snapshot, SeqCst);
@@ -163,16 +160,19 @@ struct PageRootFrag {
     b: Element,
     c: Element,
     d: Element,
-    e: Element,                           // 4
-    f: IfElement<PageState, If1Content>,  // 5 - #if block
-    g: EachElement<PageState, EachFrag1>, // 6 - #each
+    e: Element,                // 4
+    f: IfElement<If1Content>,  // 5 - #if block
+    g: EachElement<EachFrag1>, // 6 - #each
     h: Element,
     i: Element,
     j: Button,
 }
 
-impl PageRootFrag {
-    fn new(state: &PageState) -> Result<Self, JsValue> {
+impl RootFragment for PageRootFrag {
+    type State = PageState;
+    type Scope<'a> = ();
+
+    fn new(state: &Self::State, scope: Self::Scope<'_>) -> Result<Self, JsValue> {
         let window = web_sys::window().expect("no global window exists");
         let document = window.document().expect("no document on window");
 
@@ -206,18 +206,15 @@ impl PageRootFrag {
         })
     }
 
-    fn mount(&self, parent: &Element) -> Result<(), JsValue> {
-        parent.append_child(&self.a)?;
+    fn mount(&self, add_method: impl AddMethod) -> Result<(), JsValue> {
+        add_method(&self.a)?;
         self.a.append_child(&self.b)?;
         self.a.append_child(&self.c)?;
-        self.j.mount(vec![3], |el| {
-            self.a.append_child(el)?;
-            Ok(())
-        })?; // TODO: remove parent path & update button
+        self.j.mount(child_append_closure(&self.a))?; // TODO: remove parent path & update button
         self.a.append_child(&self.d)?;
         self.a.append_child(&self.e)?;
-        self.f.mount(&self.a)?;
-        self.g.mount(&self.a)?;
+        self.f.mount(&self.a, child_append_closure(&self.a))?;
+        self.g.mount(&self.a, child_append_closure(&self.a))?;
         self.a.append_child(&self.h)?;
         self.h.append_child(&self.i)?;
         Ok(())
@@ -225,11 +222,21 @@ impl PageRootFrag {
 
     fn proc(
         &mut self,
-        state: &mut PageState,
+        state: &mut Self::State,
+        scope: Self::Scope<'_>,
         e: web_sys::Event,
         mut target_path: Vec<u32>,
     ) -> Result<(), JsValue> {
         let target = target_path.pop().unwrap();
+        web_sys::console::log_1(
+            &format!(
+                "Target is {}, event type: {}, target path: {:?}",
+                target,
+                e.type_(),
+                target_path
+            )
+            .into(),
+        );
         match e.type_().as_str() {
             "click" if target == 1 => {
                 state.increment();
@@ -252,31 +259,12 @@ impl PageRootFrag {
                     // Run user defined closure with bound function call
                     (|state: &mut PageState, new_val| {
                         *state.counter = new_val;
-                    })(state, *self.j.func_call);
+                    })(state, self.j.state.func_call);
                 }
             }
             _ if target == 6 => {
                 // Example of an #each block nested handler
-
-                // Get item specific scoped variable
-                let target = target_path.pop().unwrap();
-                let item = self.g.content[target as usize].2; // get the item from the #each content array based on index
-
-                // Find target element in #each content
-                let target = target_path.pop().unwrap();
-                match e.type_().as_str() {
-                    "click" if target == 1 => {
-                        // User closure:
-                        (|state: &mut PageState| {
-                            *state.counter = item;
-                        })(state);
-                    }
-                    // Could also be a component in here
-                    _ if target == 3 => {
-                        // Propagate downward & handle bindings just as shown above
-                    }
-                    _ => {}
-                }
+                self.g.proc(state, (), e, target_path)?;
             }
             _ => {}
         }
@@ -284,7 +272,12 @@ impl PageRootFrag {
         Ok(())
     }
 
-    fn update(&mut self, state: &PageState, flags: u64) -> Result<(), JsValue> {
+    fn update(
+        &mut self,
+        state: &mut Self::State,
+        scope: Self::Scope<'_>,
+        flags: u64,
+    ) -> Result<(), JsValue> {
         web_sys::console::log_1(&format!("Updating PageRootFrag with flags: {:b}", flags).into());
         // counter changed
         if flags & 1 << 0 != 0 {
@@ -294,8 +287,8 @@ impl PageRootFrag {
             self.d.set_inner_html(&format!("Count: {}", *state.counter));
         }
 
-        self.f.update(&self.a, state, (), flags)?;
-        self.g.update(&self.a, state, (), flags)?;
+        self.f.update(&self.a, state, scope, flags)?;
+        self.g.update(&self.a, state, scope, flags)?;
 
         // my_struct changed
         if flags & 1 << 1 != 0 {
@@ -321,7 +314,7 @@ impl PageRootFrag {
 
             // Update props for button
             if flags & 1 << 1 != 0 {
-                self.j.text = state.my_struct.b.clone(); // my_struct.b is the given expression
+                self.j.state.text = state.my_struct.b.clone(); // my_struct.b is the given expression
                 DIRTY_FLAGS.fetch_or(1 << 0, SeqCst); // manually mark prop as dirty
             }
 
@@ -330,6 +323,11 @@ impl PageRootFrag {
 
         Ok(())
     }
+
+    fn unmount(&self) {
+        self.a.remove();
+        //self.j.unmount();
+    }
 }
 
 enum If1Content {
@@ -337,10 +335,11 @@ enum If1Content {
     Else(IfBranch2),
 }
 
-impl IfContentTrait<PageState> for If1Content {
+impl IfContentTrait for If1Content {
     type Scope<'a> = ();
+    type State = PageState;
 
-    fn branch_changed(&self, state: &PageState, _scope: Self::Scope<'_>, flags: u64) -> bool {
+    fn branch_changed(&self, state: &Self::State, _scope: Self::Scope<'_>, flags: u64) -> bool {
         if flags & 1 << 0 != 0 {
             match self {
                 If1Content::If(_) if *state.counter > 5 => false,
@@ -352,46 +351,46 @@ impl IfContentTrait<PageState> for If1Content {
         }
     }
 
-    fn new(state: &PageState, scope: Self::Scope<'_>) -> Result<Self, JsValue> {
+    fn new(state: &Self::State, scope: Self::Scope<'_>) -> Result<Self, JsValue> {
         Ok(if *state.counter > 5 {
-            If1Content::If(IfBranch1::new(state)?)
+            If1Content::If(IfBranch1::new(state, scope)?)
         } else {
-            If1Content::Else(IfBranch2::new(state)?)
+            If1Content::Else(IfBranch2::new(state, scope)?)
         })
     }
 
-    fn mount(&self, parent: &Element, comment: &web_sys::Comment) -> Result<(), JsValue> {
+    fn mount(&self, parent: &Element, add_method: impl AddMethod) -> Result<(), JsValue> {
         match &self {
-            If1Content::If(contents) => contents.mount(parent, comment),
-            If1Content::Else(contents) => contents.mount(parent, comment),
+            If1Content::If(contents) => contents.mount(parent, add_method),
+            If1Content::Else(contents) => contents.mount(parent, add_method),
         }
     }
 
     fn proc(
         &self,
-        state: &PageState,
-        scope: Self::Scope<'_>,
-        e: web_sys::Event,
-        target_path: Vec<u32>,
+        _state: &Self::State,
+        _scope: Self::Scope<'_>,
+        _e: web_sys::Event,
+        _target_path: Vec<u32>,
     ) -> Result<(), JsValue> {
         // this could call into the branches but in this example it wouldn't do anything anyway
         match &self {
-            If1Content::If(contents) => Ok(()),
-            If1Content::Else(contents) => Ok(()),
+            If1Content::If(_) => Ok(()),
+            If1Content::Else(_) => Ok(()),
         }
     }
 
     fn update(
         &mut self,
         parent: &Element,
-        state: &PageState,
+        state: &Self::State,
         scope: Self::Scope<'_>,
         flags: u64,
     ) -> Result<(), JsValue> {
         // Check for changes in content of active branch
-        match &self {
-            If1Content::If(contents) => contents.update(state, scope, flags),
-            If1Content::Else(contents) => contents.update(state, scope, flags),
+        match self {
+            If1Content::If(contents) => contents.update(parent, state, scope, flags),
+            If1Content::Else(contents) => contents.update(parent, state, scope, flags),
         }
     }
 
@@ -409,8 +408,11 @@ struct IfBranch1 {
     c: Text,
 }
 
-impl IfBranch1 {
-    fn new(state: &PageState) -> Result<Self, JsValue> {
+impl GenericFragment for IfBranch1 {
+    type State = PageState;
+    type Scope<'a> = ();
+
+    fn new(state: &Self::State, scope: Self::Scope<'_>) -> Result<Self, JsValue> {
         let window = web_sys::window().expect("no global window exists");
         let document = window.document().expect("no document on window exists");
 
@@ -425,14 +427,31 @@ impl IfBranch1 {
         })
     }
 
-    fn mount(&self, parent: &Element, comment: &web_sys::Comment) -> Result<(), JsValue> {
-        parent.insert_before(&self.a, Some(&comment))?;
+    fn mount(&self, _parent: &Element, add_method: impl AddMethod) -> Result<(), JsValue> {
+        add_method(&self.a)?;
         self.a.append_child(&self.b)?;
         self.a.append_child(&self.c)?;
         Ok(())
     }
 
-    fn update(&self, state: &PageState, scope: (), flags: u64) -> Result<(), JsValue> {
+    fn proc(
+        &mut self,
+        state: &mut Self::State,
+        scope: Self::Scope<'_>,
+        e: web_sys::Event,
+        target_path: Vec<u32>,
+    ) -> Result<(), JsValue> {
+        // Handle events for content inside #if block if needed
+        Ok(())
+    }
+
+    fn update(
+        &mut self,
+        _parent: &Element,
+        state: &Self::State,
+        _scope: Self::Scope<'_>,
+        flags: u64,
+    ) -> Result<(), JsValue> {
         if flags & 1 << 1 != 0 {
             self.b
                 .set_text_content(Some(&format!("{}", state.my_struct.a)));
@@ -449,8 +468,11 @@ struct IfBranch2 {
     a: Element,
 }
 
-impl IfBranch2 {
-    fn new(state: &PageState) -> Result<Self, JsValue> {
+impl GenericFragment for IfBranch2 {
+    type State = PageState;
+    type Scope<'a> = ();
+
+    fn new(state: &Self::State, scope: Self::Scope<'_>) -> Result<Self, JsValue> {
         let window = web_sys::window().expect("no global window exists");
         let document = window.document().expect("no document on window exists");
 
@@ -460,12 +482,29 @@ impl IfBranch2 {
         Ok(Self { a: el5_else })
     }
 
-    fn mount(&self, parent: &Element, comment: &web_sys::Comment) -> Result<(), JsValue> {
-        parent.insert_before(&self.a, Some(&comment))?;
+    fn mount(&self, parent: &Element, add_method: impl AddMethod) -> Result<(), JsValue> {
+        add_method(&self.a)?;
         Ok(())
     }
 
-    fn update(&self, _state: &PageState, _scope: (), _flags: u64) -> Result<(), JsValue> {
+    fn proc(
+        &mut self,
+        _state: &mut Self::State,
+        _scope: Self::Scope<'_>,
+        _e: web_sys::Event,
+        _target_path: Vec<u32>,
+    ) -> Result<(), JsValue> {
+        // Handle events for content inside #if block if needed
+        Ok(())
+    }
+
+    fn update(
+        &mut self,
+        _parent: &Element,
+        _state: &Self::State,
+        _scope: Self::Scope<'_>,
+        _flags: u64,
+    ) -> Result<(), JsValue> {
         Ok(())
     }
 
@@ -478,14 +517,19 @@ impl IfBranch2 {
 struct EachFrag1 {
     // No need to store the comment here since it's stored in the EachElement struct
     a: Element,
-    b: IfElement<PageState, If2Content>,
+    b: IfElement<If2Content>,
 }
 
-impl EachContentTrait<PageState> for EachFrag1 {
+impl EachContentTrait for EachFrag1 {
     type Item = i32;
     type Scope<'a> = ();
+    type State = PageState;
 
-    fn generate(state: &PageState, _scope: Self::Scope<'_>, flags: u64) -> Option<Vec<Self::Item>> {
+    fn generate(
+        state: &Self::State,
+        _scope: Self::Scope<'_>,
+        flags: u64,
+    ) -> Option<Vec<Self::Item>> {
         if flags & 1 << 0 != 0 {
             Some((0..*state.counter).collect())
         } else {
@@ -493,7 +537,7 @@ impl EachContentTrait<PageState> for EachFrag1 {
         }
     }
 
-    fn new(state: &PageState, scope: (Self::Scope<'_>, &Self::Item)) -> Result<Self, JsValue> {
+    fn new(state: &Self::State, scope: (Self::Scope<'_>, &Self::Item)) -> Result<Self, JsValue> {
         let (_, item) = scope;
 
         let window = web_sys::window().expect("no global window exists");
@@ -508,17 +552,17 @@ impl EachContentTrait<PageState> for EachFrag1 {
         })
     }
 
-    fn mount(&self, parent: &Element, anchor: &web_sys::Comment) -> Result<(), JsValue> {
-        parent.insert_before(&self.a, Some(anchor))?;
+    fn mount(&self, parent: &Element, add_method: impl AddMethod) -> Result<(), JsValue> {
+        add_method(&self.a)?;
         Ok(())
     }
 
     fn proc(
         &self,
-        state: &PageState,
-        scope: (Self::Scope<'_>, &Self::Item),
-        e: web_sys::Event,
-        target_path: Vec<u32>,
+        _state: &Self::State,
+        _scope: (Self::Scope<'_>, &Self::Item),
+        _e: web_sys::Event,
+        _target_path: Vec<u32>,
     ) -> Result<(), JsValue> {
         // Handle events for content inside #each block if needed
         // TODO: unwrap target & go deeper
@@ -528,8 +572,8 @@ impl EachContentTrait<PageState> for EachFrag1 {
 
     fn update(
         &mut self,
-        parent: &Element,
-        _state: &PageState,
+        _parent: &Element,
+        _state: &Self::State,
         _scope: (Self::Scope<'_>, &Self::Item),
         _flags: u64,
     ) -> Result<(), JsValue> {
@@ -539,6 +583,7 @@ impl EachContentTrait<PageState> for EachFrag1 {
 
     fn unmount(&self) {
         self.a.remove();
+        self.b.unmount();
     }
 }
 
@@ -548,14 +593,15 @@ struct If2Content {
     a: Element,
 }
 
-impl IfContentTrait<PageState> for If2Content {
+impl IfContentTrait for If2Content {
     type Scope<'a> = ((), &'a i32);
+    type State = PageState;
 
-    fn branch_changed(&self, state: &PageState, _scope: Self::Scope<'_>, flags: u64) -> bool {
+    fn branch_changed(&self, _state: &Self::State, _scope: Self::Scope<'_>, _flags: u64) -> bool {
         false // no dynamic content in this example, so branch never changes after initial render
     }
 
-    fn new(state: &PageState, scope: Self::Scope<'_>) -> Result<Self, JsValue> {
+    fn new(_state: &Self::State, scope: Self::Scope<'_>) -> Result<Self, JsValue> {
         let (_, item) = scope;
         let window = web_sys::window().expect("no global window exists");
         let document = window.document().expect("no document on window exists");
@@ -566,17 +612,17 @@ impl IfContentTrait<PageState> for If2Content {
         Ok(Self { a: el })
     }
 
-    fn mount(&self, parent: &Element, comment: &web_sys::Comment) -> Result<(), JsValue> {
-        parent.insert_before(&self.a, Some(&comment))?;
+    fn mount(&self, parent: &Element, add_method: impl AddMethod) -> Result<(), JsValue> {
+        add_method(&self.a)?;
         Ok(())
     }
 
     fn proc(
         &self,
-        state: &PageState,
-        scope: Self::Scope<'_>,
-        e: web_sys::Event,
-        target_path: Vec<u32>,
+        _state: &Self::State,
+        _scope: Self::Scope<'_>,
+        _e: web_sys::Event,
+        _target_path: Vec<u32>,
     ) -> Result<(), JsValue> {
         // Handle events for content inside #each block if needed
         Ok(())
@@ -584,8 +630,8 @@ impl IfContentTrait<PageState> for If2Content {
 
     fn update(
         &mut self,
-        parent: &Element,
-        state: &PageState,
+        _parent: &Element,
+        _state: &Self::State,
         scope: Self::Scope<'_>,
         flags: u64,
     ) -> Result<(), JsValue> {
@@ -601,37 +647,43 @@ impl IfContentTrait<PageState> for If2Content {
         self.a.remove();
     }
 }
-struct Button {
-    // Element array:
-    contents: (Element, Element, Element),
 
+struct ButtonState {
     // Props:
     text: String,
     // Bindable props (any func prop affecting state is automatically bindable):
-    func_call: MutateTracker<i32>,
+    func_call: i32,
 
     // Reactive state:
     button_counter: MutateTracker<i32>,
 }
 
-impl Button {
-    fn new() -> Result<Self, JsValue> {
-        let window = web_sys::window().expect("no global window exists");
-        let document = window.document().expect("no document on window");
+impl ButtonState {
+    fn init(&mut self) {
+        // Initialize any state if needed
+    }
 
-        let el0 = document.create_element("div")?;
-        let el1 = document.create_element("button")?;
-        let el2 = document.create_element("button")?;
-        el2.set_inner_html("Set parent");
-
-        let contents = (el0, el1, el2);
-
-        let mut new_self = Self {
-            contents,
+    fn new() -> Self {
+        let mut state = ButtonState {
             text: "".to_string(),
-            func_call: MutateTracker::new(0, 1),
+            func_call: 0,
             button_counter: MutateTracker::new(0, 0),
         };
+        state.init();
+        state
+    }
+}
+
+struct Button {
+    contents: ButtonRootFrag,
+    state: ButtonState,
+}
+
+impl Button {
+    fn new() -> Result<Self, JsValue> {
+        let state = ButtonState::new();
+        let contents = ButtonRootFrag::new(&state, ())?;
+        let mut new_self = Self { contents, state };
 
         DIRTY_FLAGS.store(u64::MAX, SeqCst); // mark all as dirty for initial render
         new_self.apply()?;
@@ -639,34 +691,18 @@ impl Button {
         Ok(new_self)
     }
 
-    fn mount(&self, parent_path: Vec<u32>, add_method: impl AddMethod) -> Result<(), JsValue> {
-        add_method(&self.contents.0)?; // add root element to parent using provided method
-        self.contents.0.append_child(&self.contents.1)?;
-        self.contents.0.append_child(&self.contents.2)?;
-
-        add_listener(&self.contents.1, "click", prepend_path(&parent_path, 1))?;
-        add_listener(&self.contents.2, "click", prepend_path(&parent_path, 2))?;
-
-        Ok(())
+    fn mount(&self, add_method: impl AddMethod) -> Result<(), JsValue> {
+        self.contents.mount(add_method)
     }
 
-    fn unmount(&mut self) {
+    fn unmount(&self) {
         // Removing the root of the component will remove all children, so we only need to remove contents.0
-        self.contents.0.remove();
+        self.contents.unmount();
     }
 
-    fn proc(&mut self, e: web_sys::Event, mut target_path: Vec<u32>) -> Result<(), JsValue> {
+    fn proc(&mut self, e: web_sys::Event, target_path: Vec<u32>) -> Result<(), JsValue> {
         // Event handling
-        let target = target_path.pop().unwrap();
-        match e.type_().as_str() {
-            "click" if target == 1 => {
-                *self.button_counter += 1;
-            }
-            "click" if target == 2 => {
-                *self.func_call = *self.button_counter;
-            }
-            _ => {}
-        }
+        self.contents.proc(&mut self.state, (), e, target_path)?;
 
         self.apply()?;
 
@@ -677,13 +713,8 @@ impl Button {
         // Update derived (none in this example)
 
         // Generate patches for any state changes in this component
-        if DIRTY_FLAGS.load(SeqCst) & (1 << 0 | 1 << 1) != 0 {
-            self.contents
-                .1
-                .set_inner_html(&format!("{}: {}", self.text, *self.button_counter));
-        }
-
         let flag_snapshot = DIRTY_FLAGS.load(SeqCst);
+        self.contents.update(&mut self.state, (), flag_snapshot)?;
 
         // Propagate to children (none in this example)
 
@@ -692,6 +723,86 @@ impl Button {
 
         // Return patches to parent for processing
         Ok(())
+    }
+}
+
+struct ButtonRootFrag {
+    a: Element,
+    b: Element,
+    c: Element,
+}
+
+impl RootFragment for ButtonRootFrag {
+    type State = ButtonState;
+    type Scope<'a> = ();
+
+    fn new(state: &Self::State, scope: Self::Scope<'_>) -> Result<Self, JsValue>
+    where
+        Self: Sized,
+    {
+        let window = web_sys::window().expect("no global window exists");
+        let document = window.document().expect("no document on window");
+
+        let el0 = document.create_element("div")?;
+        let el1 = document.create_element("button")?;
+        let el2 = document.create_element("button")?;
+        el2.set_inner_html("Set parent");
+        Ok(Self {
+            a: el0,
+            b: el1,
+            c: el2,
+        })
+    }
+
+    fn mount(&self, add_method: impl AddMethod) -> Result<(), JsValue> {
+        add_method(&self.a)?;
+        self.a.append_child(&self.b)?;
+        self.a.append_child(&self.c)?;
+
+        add_listener(&self.b, "click", vec![1, 3])?; // target path is in reverse order!!
+        add_listener(&self.c, "click", vec![2, 3])?;
+
+        Ok(())
+    }
+
+    fn proc(
+        &mut self,
+        state: &mut Self::State,
+        scope: Self::Scope<'_>,
+        e: web_sys::Event,
+        mut target_path: Vec<u32>,
+    ) -> Result<(), JsValue> {
+        let target = target_path.pop().unwrap();
+        match e.type_().as_str() {
+            "click" if target == 1 => {
+                *state.button_counter += 1;
+            }
+            "click" if target == 2 => {
+                state.func_call = *state.button_counter;
+                DIRTY_FLAGS.fetch_or(1 << 1, SeqCst); // mark func_call prop as dirty to propagate to parent
+            }
+            _ => {}
+        }
+
+        Ok(())
+    }
+
+    fn update(
+        &mut self,
+        state: &mut Self::State,
+        scope: Self::Scope<'_>,
+        flags: u64,
+    ) -> Result<(), JsValue> {
+        if flags & 1 << 0 != 0 {
+            self.b
+                .set_inner_html(&format!("{}: {}", state.text, *state.button_counter));
+        }
+
+        Ok(())
+    }
+
+    fn unmount(&self) {
+        self.a.remove();
     }
 }
 

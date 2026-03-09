@@ -44,17 +44,274 @@ impl<T> DerefMut for MutateTracker<T> {
     }
 }
 
-pub struct IfElement<T> {
+struct IfElement<S, T: IfContentTrait<S>> {
     pub comment: Comment,
-    pub active_branch: u64,
     pub content_enum: T,
+    _phantom: std::marker::PhantomData<S>,
+}
+
+impl<S, T> Clone for IfElement<S, T>
+where
+    T: IfContentTrait<S> + Clone,
+{
+    fn clone(&self) -> Self {
+        Self {
+            comment: self.comment.clone(),
+            content_enum: self.content_enum.clone(),
+            _phantom: std::marker::PhantomData,
+        }
+    }
+}
+
+trait IfContentTrait<State> {
+    type Scope<'a>: Copy; // this can implement Copy 'cause it's all references
+
+    // State, Scope (internal references in nested tuples)
+    fn branch_changed(&self, state: &State, _scope: Self::Scope<'_>, flags: u64) -> bool;
+    fn new(state: &State, scope: Self::Scope<'_>) -> Result<Self, JsValue>
+    where
+        Self: Sized;
+    fn mount(&self, parent: &Element, comment: &web_sys::Comment) -> Result<(), JsValue>;
+    fn proc(
+        &self,
+        state: &State,
+        scope: Self::Scope<'_>,
+        e: web_sys::Event,
+        target_path: Vec<u32>,
+    ) -> Result<(), JsValue>;
+    fn update(
+        &mut self,
+        parent: &Element,
+        state: &State,
+        scope: Self::Scope<'_>,
+        flags: u64,
+    ) -> Result<(), JsValue>;
+    fn unmount(&self);
+}
+
+impl<S, T: IfContentTrait<S>> IfElement<S, T> {
+    fn new(state: &S, scope: T::Scope<'_>) -> Result<Self, JsValue> {
+        let window = web_sys::window().expect("no global window exists");
+        let document = window.document().expect("no document on window exists");
+
+        Ok(Self {
+            comment: document.create_comment(""),
+            content_enum: T::new(state, scope)?,
+            _phantom: std::marker::PhantomData,
+        })
+    }
+
+    fn mount(&self, parent: &Element) -> Result<(), JsValue> {
+        parent.append_child(&self.comment)?;
+        self.content_enum.mount(parent, &self.comment)
+    }
+
+    fn update(
+        &mut self,
+        parent: &Element,
+        state: &S,
+        scope: T::Scope<'_>,
+        flags: u64,
+    ) -> Result<(), JsValue> {
+        if self.content_enum.branch_changed(state, scope, flags) {
+            // Unmount old content
+            self.content_enum.unmount();
+
+            // Mount new content
+            self.content_enum = T::new(state, scope)?;
+            self.content_enum.mount(parent, &self.comment)?;
+        }
+        self.content_enum.update(parent, state, scope, flags)
+    }
+
+    fn unmount(&self) {
+        self.content_enum.unmount();
+        self.comment.remove();
+    }
 }
 
 /// Represents the content of an each block, which may have multiple instances
 /// Each instance is identified by a unique key produced by a hash function
-pub struct EachElement<U, T> {
+struct EachElement<S, T: EachContentTrait<S>> {
     pub comment: Comment,
-    pub content: Vec<(u64, U, T)>, // (hash, DOM ref, item)
+    pub content: Vec<(u64, T, T::Item)>, // (hash, DOM ref, item)
+    _phantom: std::marker::PhantomData<S>,
+}
+
+/// Functions which the fragment inside an each block must implement to be used as content for an EachElement
+trait EachContentTrait<S> {
+    type Scope<'a>: Copy; // this can implement Copy 'cause it's all references
+
+    // State, Scope (internal references in nested tuples)
+    type Item: std::hash::Hash;
+
+    fn generate(state: &S, scope: Self::Scope<'_>, flags: u64) -> Option<Vec<Self::Item>>;
+    fn new(state: &S, scope: (Self::Scope<'_>, &Self::Item)) -> Result<Self, JsValue>
+    where
+        Self: Sized;
+    fn mount(&self, parent: &Element, anchor: &web_sys::Comment) -> Result<(), JsValue>;
+    fn proc(
+        &self,
+        state: &S,
+        scope: (Self::Scope<'_>, &Self::Item),
+        e: web_sys::Event,
+        target_path: Vec<u32>,
+    ) -> Result<(), JsValue>;
+    fn update(
+        &mut self,
+        parent: &Element,
+        state: &S,
+        scope: (Self::Scope<'_>, &Self::Item),
+        flags: u64,
+    ) -> Result<(), JsValue>;
+    fn unmount(&self);
+}
+
+impl<S, T: EachContentTrait<S> + Clone> EachElement<S, T> {
+    fn new(state: &S, scope: T::Scope<'_>) -> Result<Self, JsValue> {
+        let window = web_sys::window().expect("no global window exists");
+        let document = window.document().expect("no document on window exists");
+
+        Ok(Self {
+            comment: document.create_comment(""),
+            content: T::generate(state, scope, u64::MAX)
+                .unwrap()
+                .into_iter()
+                .map(|item| {
+                    let hash = hash_item(&item);
+                    let content = T::new(state, (scope, &item)).expect("Failed to create content");
+                    (hash, content, item)
+                })
+                .collect(),
+            _phantom: std::marker::PhantomData,
+        })
+    }
+
+    fn mount(&self, parent: &Element) -> Result<(), JsValue> {
+        parent.append_child(&self.comment)?;
+        for (_, content, _) in &self.content {
+            content.mount(parent, &self.comment)?;
+        }
+        Ok(())
+    }
+
+    fn update(
+        &mut self,
+        parent: &Element,
+        state: &S,
+        scope: T::Scope<'_>,
+        flags: u64,
+    ) -> Result<(), JsValue> {
+        // Diff & update each list if necessary
+        if let Some(new_items) = T::generate(state, scope, flags) {
+            let new_hashes: Vec<u64> = new_items.iter().map(|item| hash_item(item)).collect();
+            let mut takeable_new_items: Vec<Option<T::Item>> =
+                new_items.into_iter().map(Some).collect();
+
+            // Find head and tail of middle batch
+            let mut head = 0;
+            while head < self.content.len()
+                && head < new_hashes.len()
+                && self.content[head].0 == new_hashes[head]
+            {
+                head += 1;
+            }
+            let mut tail = 0;
+            while tail < self.content.len() - head
+                && tail < new_hashes.len() - head
+                && self.content[self.content.len() - 1 - tail].0
+                    == new_hashes[new_hashes.len() - 1 - tail]
+            {
+                tail += 1;
+            }
+
+            // Build a map of new hashes to their indices for quick lookup
+            let mut new_item_source_map = std::collections::HashMap::new();
+            for i in head..(new_hashes.len() - tail) {
+                new_item_source_map.insert(new_hashes[i], i);
+            }
+
+            // Create a new array to hold the source indices for the new items
+            // TODO: items before and after middle batch should be handled separately to avoid unnecessary moves
+            let mut new_item_source_array = vec![None; new_hashes.len()];
+            for i in 0..head {
+                new_item_source_array[i] = Some(i);
+            }
+            for i in head..(self.content.len() - tail) {
+                if let Some(&new_index) = new_item_source_map.get(&self.content[i].0) {
+                    new_item_source_array[new_index] = Some(i);
+                } else {
+                    // Unmount code for removed item
+                    self.content[i].1.unmount();
+                }
+            }
+            for i in (new_hashes.len() - tail)..new_hashes.len() {
+                new_item_source_array[i] = Some(self.content.len() - (new_hashes.len() - i));
+            }
+
+            // Find longest increasing subsequence of source indices in new_item_source_array
+            let mut subs = vec![Vec::new()]; // list of all increasing subsequences found so far
+            let mut last_index: i32 = -1; // index of the last item in the longest increasing subsequence
+            for (new_index, source_index_opt) in new_item_source_array.iter().enumerate() {
+                let current_sub = subs.last_mut().unwrap();
+                if let Some(source_index) = source_index_opt {
+                    if current_sub.is_empty() || *source_index as i32 > last_index {
+                        current_sub.push(new_index);
+                    } else {
+                        subs.push(vec![new_index]);
+                    }
+                    last_index = *source_index as i32;
+                }
+            }
+            let longest_sub = subs
+                .into_iter()
+                .max_by_key(|sub| sub.len())
+                .unwrap_or_default();
+
+            let mut new_list = Vec::new();
+            for (new_index, source_index_opt) in new_item_source_array.into_iter().enumerate() {
+                if let Some(source_index) = source_index_opt {
+                    if !longest_sub.contains(&new_index) {
+                        // Move existing item to correct position
+                        let new_item = takeable_new_items[new_index].take().unwrap();
+                        let contents = &self.content[source_index].1;
+                        contents.unmount();
+                        contents.mount(parent, &self.comment)?;
+                        new_list.push((self.content[source_index].0, contents.clone(), new_item));
+                    } else {
+                        // Item is already in correct position, just update anchor for next iteration
+                        let new_item = takeable_new_items[new_index].take().unwrap();
+                        new_list.push((
+                            self.content[source_index].0,
+                            self.content[source_index].1.clone(),
+                            new_item,
+                        ));
+                    }
+                } else {
+                    // Mount new item
+                    let new_item = takeable_new_items[new_index].take().unwrap();
+                    let new_contents = T::new(state, (scope, &new_item))?;
+                    new_contents.mount(parent, &self.comment)?;
+                    new_list.push((new_hashes[new_index], new_contents.clone(), new_item));
+                }
+            }
+            self.content = new_list.into_iter().collect();
+        }
+
+        // Update all items (including moved ones) with new scope and flags
+        for (_, content, item) in &mut self.content {
+            content.update(parent, state, (scope, item), flags)?;
+        }
+
+        Ok(())
+    }
+
+    fn unmount(&self) {
+        for (_, content, _) in &self.content {
+            content.unmount();
+        }
+        self.comment.remove();
+    }
 }
 
 fn hash_item<T: std::hash::Hash>(item: &T) -> u64 {
@@ -64,112 +321,6 @@ fn hash_item<T: std::hash::Hash>(item: &T) -> u64 {
     let mut hasher = DefaultHasher::new();
     item.hash(&mut hasher);
     hasher.finish()
-}
-
-/// Diffs the existing content of an each block with the new items,
-/// unmounting removed items, mounting new items, and moving existing items as needed to match the new order.
-/// Returns the new list of (hash, content) pairs in the correct order.
-/// 
-/// Uses the Longest Increasing Subsequence algorithm to minimize moves of existing items.
-fn diff_each_content<T: std::hash::Hash, U: Clone>(
-    existing: &Vec<(u64, U, T)>,
-    new_items: Vec<T>,
-    parent: &Node,
-    mount_anchor: Comment,
-    unmount_fn: impl Fn(&U),
-    create_fn: impl Fn(&T) -> Result<U, JsValue>,
-    mount_fn: impl Fn(&Node, &Node, &U) -> Result<(), JsValue>, // returns the new anchor after mounting
-) -> Result<Vec<(u64, U, T)>, JsValue>
-where
-    Node: From<U>,
-{
-    let new_hashes: Vec<u64> = new_items.iter().map(|item| hash_item(item)).collect();
-    let mut takeable_new_items: Vec<Option<T>> = new_items.into_iter().map(Some).collect();
-
-    // Find head and tail of middle batch
-    let mut head = 0;
-    while head < existing.len() && head < new_hashes.len() && existing[head].0 == new_hashes[head] {
-        head += 1;
-    }
-    let mut tail = 0;
-    while tail < existing.len() - head
-        && tail < new_hashes.len() - head
-        && existing[existing.len() - 1 - tail].0 == new_hashes[new_hashes.len() - 1 - tail]
-    {
-        tail += 1;
-    }
-
-    // Build a map of new hashes to their indices for quick lookup
-    let mut new_item_source_map = std::collections::HashMap::new();
-    for i in head..(new_hashes.len() - tail) {
-        new_item_source_map.insert(new_hashes[i], i);
-    }
-
-    // Create a new array to hold the source indices for the new items
-    // TODO: items before and after middle batch should be handled separately to avoid unnecessary moves
-    let mut new_item_source_array = vec![None; new_hashes.len()];
-    for i in 0..head {
-        new_item_source_array[i] = Some(i);
-    }
-    for i in head..(existing.len() - tail) {
-        if let Some(&new_index) = new_item_source_map.get(&existing[i].0) {
-            new_item_source_array[new_index] = Some(i);
-        } else {
-            // Unmount code for removed item
-            unmount_fn(&existing[i].1);
-        }
-    }
-    for i in (new_hashes.len() - tail)..new_hashes.len() {
-        new_item_source_array[i] = Some(existing.len() - (new_hashes.len() - i));
-    }
-
-    // Find longest increasing subsequence of source indices in new_item_source_array
-    let mut subs = vec![Vec::new()]; // list of all increasing subsequences found so far
-    let mut last_index: i32 = -1; // index of the last item in the longest increasing subsequence
-    for (new_index, source_index_opt) in new_item_source_array.iter().enumerate() {
-        let current_sub = subs.last_mut().unwrap();
-        if let Some(source_index) = source_index_opt {
-            if current_sub.is_empty() || *source_index as i32 > last_index {
-                current_sub.push(new_index);
-            } else {
-                subs.push(vec![new_index]);
-            }
-            last_index = *source_index as i32;
-        }
-    }
-    let longest_sub = subs
-        .into_iter()
-        .max_by_key(|sub| sub.len())
-        .unwrap_or_default();
-
-    let mut anchor: Node = mount_anchor.into();
-    let mut new_list = Vec::new();
-    for (new_index, source_index_opt) in new_item_source_array.into_iter().enumerate().rev() {
-        if let Some(source_index) = source_index_opt {
-            if !longest_sub.contains(&new_index) {
-                // Move existing item to correct position
-                let new_item = takeable_new_items[new_index].take().unwrap();
-                let contents = &existing[source_index].1;
-                unmount_fn(contents);
-                mount_fn(&parent, &anchor, &contents)?;
-                new_list.push((existing[source_index].0, contents.clone(), new_item));
-                anchor = contents.clone().into();
-            } else {
-                // Item is already in correct position, just update anchor for next iteration
-                let new_item = takeable_new_items[new_index].take().unwrap();
-                anchor = existing[source_index].1.clone().into();
-                new_list.push((existing[source_index].0, existing[source_index].1.clone(), new_item));
-            }
-        } else {
-            // Mount new item
-            let new_item = takeable_new_items[new_index].take().unwrap();
-            let new_contents = create_fn(&new_item)?;
-            mount_fn(&parent, &anchor, &new_contents)?;
-            new_list.push((new_hashes[new_index], new_contents.clone(), new_item));
-            anchor = new_contents.into();
-        }
-    }
-    Ok(new_list.into_iter().rev().collect())
 }
 
 pub fn prepend_path(base: &Vec<u32>, addition: u32) -> Vec<u32> {
@@ -237,7 +388,10 @@ fn child_append_closure(e: &Element) -> impl AddMethod + '_ {
     closure
 }
 
-fn comment_insert_closure<'a, T>(e: &'a T, p: &'a Element) -> impl AddMethod + 'a where for<'b> &'b Node: From<&'b T> {
+fn comment_insert_closure<'a, T>(e: &'a T, p: &'a Element) -> impl AddMethod + 'a
+where
+    for<'b> &'b Node: From<&'b T>,
+{
     let closure = move |el: &Element| {
         p.insert_before(el, Some(e.into()))?;
         Ok(())
@@ -257,8 +411,7 @@ pub fn mount() -> Result<(), JsValue> {
         let document = window.document().expect("no document on window");
         let body = document.body().expect("document should have a body");
 
-        let mut new_page = Page::new()?;
-        new_page.mount(vec![], &body)?;
+        let new_page = Page::new(&body)?;
         *page.borrow_mut() = Some(new_page);
         web_sys::console::log_1(&"Page component mounted".into());
         Ok(())

@@ -121,8 +121,8 @@ trait IfContentTrait {
         Self: Sized;
     fn mount(&self, parent: &Element, add_method: impl AddMethod) -> Result<(), JsValue>;
     fn proc(
-        &self,
-        state: &Self::State,
+        &mut self,
+        state: &mut Self::State,
         scope: Self::Scope<'_>,
         e: web_sys::Event,
         target_path: Vec<u32>,

@@ -181,8 +181,8 @@ impl RootFragment for PageRootFrag {
         let el2 = document.create_element("button")?;
         let el3 = document.create_element("p")?;
         let el4 = document.create_element("p")?;
-        let el5 = IfElement::new(state, ())?;
-        let el6 = EachElement::new(state, ())?;
+        let el5 = IfElement::new(state, scope)?;
+        let el6 = EachElement::new(state, scope)?;
         let el7 = document.create_element("div")?;
         let el8 = document.create_element("p")?;
         let el9 = Button::new()?;
@@ -342,8 +342,8 @@ impl IfContentTrait for If1Content {
     fn branch_changed(&self, state: &Self::State, _scope: Self::Scope<'_>, flags: u64) -> bool {
         if flags & 1 << 0 != 0 {
             match self {
-                If1Content::If(_) if *state.counter > 5 => false,
-                If1Content::Else(_) if !(*state.counter > 5) => false,
+                Self::If(_) if *state.counter > 5 => false,
+                Self::Else(_) if !(*state.counter > 5) => false,
                 _ => true,
             }
         } else {
@@ -353,30 +353,30 @@ impl IfContentTrait for If1Content {
 
     fn new(state: &Self::State, scope: Self::Scope<'_>) -> Result<Self, JsValue> {
         Ok(if *state.counter > 5 {
-            If1Content::If(IfBranch1::new(state, scope)?)
+            Self::If(IfBranch1::new(state, scope)?)
         } else {
-            If1Content::Else(IfBranch2::new(state, scope)?)
+            Self::Else(IfBranch2::new(state, scope)?)
         })
     }
 
     fn mount(&self, parent: &Element, add_method: impl AddMethod) -> Result<(), JsValue> {
-        match &self {
-            If1Content::If(contents) => contents.mount(parent, add_method),
-            If1Content::Else(contents) => contents.mount(parent, add_method),
+        match self {
+            Self::If(contents) => contents.mount(parent, add_method),
+            Self::Else(contents) => contents.mount(parent, add_method),
         }
     }
 
     fn proc(
-        &self,
-        _state: &Self::State,
-        _scope: Self::Scope<'_>,
-        _e: web_sys::Event,
-        _target_path: Vec<u32>,
+        &mut self,
+        state: &mut Self::State,
+        scope: Self::Scope<'_>,
+        e: web_sys::Event,
+        target_path: Vec<u32>,
     ) -> Result<(), JsValue> {
         // this could call into the branches but in this example it wouldn't do anything anyway
-        match &self {
-            If1Content::If(_) => Ok(()),
-            If1Content::Else(_) => Ok(()),
+        match self {
+            Self::If(fragment) => fragment.proc(state, scope, e, target_path),
+            Self::Else(_) => Ok(()),
         }
     }
 
@@ -389,15 +389,15 @@ impl IfContentTrait for If1Content {
     ) -> Result<(), JsValue> {
         // Check for changes in content of active branch
         match self {
-            If1Content::If(contents) => contents.update(parent, state, scope, flags),
-            If1Content::Else(contents) => contents.update(parent, state, scope, flags),
+            Self::If(contents) => contents.update(parent, state, scope, flags),
+            Self::Else(contents) => contents.update(parent, state, scope, flags),
         }
     }
 
     fn unmount(&self) {
         match self {
-            If1Content::If(contents) => contents.unmount(),
-            If1Content::Else(contents) => contents.unmount(),
+            Self::If(contents) => contents.unmount(),
+            Self::Else(contents) => contents.unmount(),
         }
     }
 }
@@ -602,14 +602,14 @@ impl IfContentTrait for If2Content {
     }
 
     fn new(_state: &Self::State, scope: Self::Scope<'_>) -> Result<Self, JsValue> {
-        let (_, item) = scope;
+        let (_, a_scope) = scope;
         let window = web_sys::window().expect("no global window exists");
         let document = window.document().expect("no document on window exists");
 
-        let el = document.create_element("p")?;
-        el.set_inner_html(&format!("Item is {}", item));
+        let a = document.create_element("p")?;
+        a.set_inner_html(&format!("{}", a_scope));
 
-        Ok(Self { a: el })
+        Ok(Self { a })
     }
 
     fn mount(&self, parent: &Element, add_method: impl AddMethod) -> Result<(), JsValue> {
@@ -618,8 +618,8 @@ impl IfContentTrait for If2Content {
     }
 
     fn proc(
-        &self,
-        _state: &Self::State,
+        &mut self,
+        _state: &mut Self::State,
         _scope: Self::Scope<'_>,
         _e: web_sys::Event,
         _target_path: Vec<u32>,

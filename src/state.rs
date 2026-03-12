@@ -14,7 +14,7 @@ fn add<T: std::ops::Add<Output = T>>(a: T, b: T) -> T {
     a + b
 }
 
-struct PageState {
+pub struct PageState {
     // Prop state: none
 
     // Reactive state:
@@ -25,7 +25,7 @@ struct PageState {
     counter_plus_one: i32,
 }
 
-impl PageState {
+impl ComponentState for PageState {
     fn init(&mut self) {
         //let mut other_var = 42;
         //other_var += 1;
@@ -33,21 +33,7 @@ impl PageState {
         *self.counter += 1;
     }
 
-    // User defined functions for Page
-    fn increment(&mut self) {
-        *self.counter += 1;
-        add(*self.counter, 5);
-    }
-
-    fn update_struct(&mut self, inc: bool) {
-        if inc {
-            self.increment();
-        }
-        self.my_struct.a += *self.counter; // NOTE: no need to deref when a field in a state variable is accessed (it already does it implicitly)
-        self.my_struct.b = format!("Count is {}", *self.counter);
-    }
-
-    pub fn new() -> Self {
+    fn new() -> Self {
         let mut state = PageState {
             counter: MutateTracker::new(0, 0),
             my_struct: MutateTracker::new(
@@ -63,99 +49,32 @@ impl PageState {
 
         state
     }
-}
 
-/// Global state for the page component
-///
-/// Each component has the following sections recursively:
-/// - Content array: array of all elements in the component, used for patching
-/// - Prop state: state variables passed from parent component
-/// - Reactive state: state variables that trigger re-renders when changed
-/// - Derived state: state variables that are computed from reactive state
-/// - Child component local state: recurse
-/// - Fragment state: state variables for managing fragments (e.g., #if, #each)
-///
-/// All values except derived are user defined. Derived state is auto-generated.
-pub struct Page {
-    contents: PageRootFrag,
-    state: PageState,
-}
-
-impl Page {
-    pub fn new(add_method: impl AddMethod) -> Result<Self, JsValue> {
-        web_sys::console::log_1(&"Initializing Page component".into());
-
-        let state = PageState::new();
-        let contents = PageRootFrag::new(&state, ())?;
-        let mut new_page = Self { contents, state };
-        new_page.mount(add_method)?;
-
-        DIRTY_FLAGS.store(u64::MAX, SeqCst); // mark all as dirty for initial render
-        new_page.apply()?;
-
-        Ok(new_page)
-    }
-
-    fn mount(&mut self, add_method: impl AddMethod) -> Result<(), JsValue> {
-        self.contents.mount(add_method)
-    }
-
-    /// Process an event and return patches to apply to the DOM
-    ///
-    /// The target_path describes where the event took place.
-    /// This function will check if the current component is the target,
-    /// and if so run the corresponding user code for that event.
-    /// Otherwise, it will propagate the event to the correct child component to process.
-    ///
-    /// If handled by a child, the function checks for changes in bindable props and updates
-    /// the state of the current component accordingly, and marking them to be excluded from
-    /// propagation back down to the child to avoid feedback loops.
-    ///
-    /// Finally, it runs the apply function, to derived, generate patches,
-    /// and propagate any changes to children as needed.
-    pub fn proc(&mut self, e: web_sys::Event, target_path: Vec<u32>, _: ()) -> Result<(), JsValue> {
-        web_sys::console::log_1(
-            &format!(
-                "Processing event: {}, target path: {:?}",
-                e.type_(),
-                target_path
-            )
-            .into(),
-        );
-        // Event handling
-        self.contents.proc(&mut self.state, (), e, target_path)?;
-
-        self.apply()?;
-
-        Ok(())
-    }
-
-    /// Generate patches based on changes to reactive state and derived state
-    ///
-    /// The flag_exclude parameter is a bitmask of any bindable props that should
-    /// not be included in the propagation to children to avoid feedback loops.
-    pub fn apply(&mut self) -> Result<(), JsValue> {
-        let state = &mut self.state;
-
-        // update derived
+    fn update_derived(&mut self) {
         if DIRTY_FLAGS.load(SeqCst) & 1 << 0 != 0 {
-            state.counter_plus_one = *state.counter + 1;
+            self.counter_plus_one = *self.counter + 1;
             DIRTY_FLAGS.fetch_or(1 << 3, SeqCst);
         }
-
-        // generate patches based on dirty flags
-        let flag_snapshot = DIRTY_FLAGS.load(SeqCst);
-
-        self.contents.update(state, (), flag_snapshot)?;
-
-        // Restore snapshot
-        DIRTY_FLAGS.store(flag_snapshot, SeqCst);
-
-        Ok(())
     }
 }
 
-struct PageRootFrag {
+// User defined functions for Page
+impl PageState {
+    fn increment(&mut self) {
+        *self.counter += 1;
+        add(*self.counter, 5);
+    }
+
+    fn update_struct(&mut self, inc: bool) {
+        if inc {
+            self.increment();
+        }
+        self.my_struct.a += *self.counter; // NOTE: no need to deref when a field in a state variable is accessed (it already does it implicitly)
+        self.my_struct.b = format!("Count is {}", *self.counter);
+    }
+}
+
+pub struct PageRootFrag {
     a: Element,
     b: Element,
     c: Element,
@@ -165,14 +84,13 @@ struct PageRootFrag {
     g: EachElement<EachFrag1>, // 6 - #each
     h: Element,
     i: Element,
-    j: Button,
+    j: Component<ButtonRootFrag>,
 }
 
 impl RootFragment for PageRootFrag {
     type State = PageState;
-    type Scope<'a> = ();
 
-    fn new(state: &Self::State, scope: Self::Scope<'_>) -> Result<Self, JsValue> {
+    fn new(state: &Self::State, scope: ()) -> Result<Self, JsValue> {
         let window = web_sys::window().expect("no global window exists");
         let document = window.document().expect("no document on window");
 
@@ -185,7 +103,7 @@ impl RootFragment for PageRootFrag {
         let el6 = EachElement::new(state, scope)?;
         let el7 = document.create_element("div")?;
         let el8 = document.create_element("p")?;
-        let el9 = Button::new()?;
+        let el9 = Component::<ButtonRootFrag>::new()?;
 
         // target paths are static and unique to each fragment
         // listeners are in new() to preserve them if moved (unmounted & remounted)
@@ -223,7 +141,7 @@ impl RootFragment for PageRootFrag {
     fn proc(
         &mut self,
         state: &mut Self::State,
-        scope: Self::Scope<'_>,
+        scope: (),
         e: web_sys::Event,
         mut target_path: Vec<u32>,
     ) -> Result<(), JsValue> {
@@ -242,11 +160,11 @@ impl RootFragment for PageRootFrag {
                 state.increment();
             }
             "click" if target == 2 => {
-                (|state: &mut PageState| state.update_struct(true))(state);
+                (|| state.update_struct(true))();
             }
             // target is in button component
             _ if target == 3 => {
-                self.j.proc(e, target_path)?;
+                self.j.proc(e, target_path, scope)?;
                 let child_bindable_flags = DIRTY_FLAGS.load(SeqCst);
                 DIRTY_FLAGS.store(0, SeqCst); // reset for parent processing
 
@@ -257,14 +175,14 @@ impl RootFragment for PageRootFrag {
                     // DIRTY_FLAGS.fetch_or(1 << 0, SeqCst); // manually mark parent prop as dirty if it was changed by child
 
                     // Run user defined closure with bound function call
-                    (|state: &mut PageState, new_val| {
+                    (|new_val| {
                         *state.counter = new_val;
-                    })(state, self.j.state.func_call);
+                    })(self.j.state.func_call);
                 }
             }
             _ if target == 6 => {
                 // Example of an #each block nested handler
-                self.g.proc(state, (), e, target_path)?;
+                self.g.proc(state, scope, e, target_path)?;
             }
             _ => {}
         }
@@ -275,7 +193,7 @@ impl RootFragment for PageRootFrag {
     fn update(
         &mut self,
         state: &mut Self::State,
-        scope: Self::Scope<'_>,
+        scope: (),
         flags: u64,
     ) -> Result<(), JsValue> {
         web_sys::console::log_1(&format!("Updating PageRootFrag with flags: {:b}", flags).into());
@@ -619,12 +537,21 @@ impl IfContentTrait for If2Content {
 
     fn proc(
         &mut self,
-        _state: &mut Self::State,
-        _scope: Self::Scope<'_>,
-        _e: web_sys::Event,
-        _target_path: Vec<u32>,
+        state: &mut Self::State,
+        scope: Self::Scope<'_>,
+        e: web_sys::Event,
+        mut target_path: Vec<u32>,
     ) -> Result<(), JsValue> {
         // Handle events for content inside #each block if needed
+        let (_, item) = scope;
+        let target = target_path.pop().unwrap();
+        match e.type_().as_str() {
+            "click" if target == 0 => {
+                (|| *state.counter += item)();
+            }
+            _ => {}
+        }
+
         Ok(())
     }
 
@@ -658,7 +585,7 @@ struct ButtonState {
     button_counter: MutateTracker<i32>,
 }
 
-impl ButtonState {
+impl ComponentState for ButtonState {
     fn init(&mut self) {
         // Initialize any state if needed
     }
@@ -672,57 +599,9 @@ impl ButtonState {
         state.init();
         state
     }
-}
 
-struct Button {
-    contents: ButtonRootFrag,
-    state: ButtonState,
-}
-
-impl Button {
-    fn new() -> Result<Self, JsValue> {
-        let state = ButtonState::new();
-        let contents = ButtonRootFrag::new(&state, ())?;
-        let mut new_self = Self { contents, state };
-
-        DIRTY_FLAGS.store(u64::MAX, SeqCst); // mark all as dirty for initial render
-        new_self.apply()?;
-
-        Ok(new_self)
-    }
-
-    fn mount(&self, add_method: impl AddMethod) -> Result<(), JsValue> {
-        self.contents.mount(add_method)
-    }
-
-    fn unmount(&self) {
-        // Removing the root of the component will remove all children, so we only need to remove contents.0
-        self.contents.unmount();
-    }
-
-    fn proc(&mut self, e: web_sys::Event, target_path: Vec<u32>) -> Result<(), JsValue> {
-        // Event handling
-        self.contents.proc(&mut self.state, (), e, target_path)?;
-
-        self.apply()?;
-
-        Ok(())
-    }
-
-    fn apply(&mut self) -> Result<(), JsValue> {
-        // Update derived (none in this example)
-
-        // Generate patches for any state changes in this component
-        let flag_snapshot = DIRTY_FLAGS.load(SeqCst);
-        self.contents.update(&mut self.state, (), flag_snapshot)?;
-
-        // Propagate to children (none in this example)
-
-        // Restore snapshot
-        DIRTY_FLAGS.store(flag_snapshot, SeqCst);
-
-        // Return patches to parent for processing
-        Ok(())
+    fn update_derived(&mut self) {
+        // Update any derived state if needed (none in this example)
     }
 }
 
@@ -734,9 +613,8 @@ struct ButtonRootFrag {
 
 impl RootFragment for ButtonRootFrag {
     type State = ButtonState;
-    type Scope<'a> = ();
 
-    fn new(state: &Self::State, scope: Self::Scope<'_>) -> Result<Self, JsValue>
+    fn new(state: &Self::State, scope: ()) -> Result<Self, JsValue>
     where
         Self: Sized,
     {
@@ -768,7 +646,7 @@ impl RootFragment for ButtonRootFrag {
     fn proc(
         &mut self,
         state: &mut Self::State,
-        scope: Self::Scope<'_>,
+        scope: (),
         e: web_sys::Event,
         mut target_path: Vec<u32>,
     ) -> Result<(), JsValue> {
@@ -790,7 +668,7 @@ impl RootFragment for ButtonRootFrag {
     fn update(
         &mut self,
         state: &mut Self::State,
-        scope: Self::Scope<'_>,
+        scope: (),
         flags: u64,
     ) -> Result<(), JsValue> {
         if flags & 1 << 0 != 0 {

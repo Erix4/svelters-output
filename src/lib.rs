@@ -1,6 +1,6 @@
 use std::{
     cell::RefCell,
-    ops::{Add, Deref, DerefMut},
+    ops::{Deref, DerefMut},
     sync::atomic::{AtomicU64, Ordering::SeqCst},
     vec,
 };
@@ -11,7 +11,7 @@ use wasm_bindgen::{
 };
 use web_sys::{Comment, Element, Node};
 
-use crate::state::Page;
+use crate::state::PageRootFrag;
 
 mod state;
 
@@ -44,27 +44,99 @@ impl<T> DerefMut for MutateTracker<T> {
     }
 }
 
-trait RootFragment {
-    type State;
-    type Scope<'a>: Copy; // this can implement Copy 'cause it's all references
+trait ComponentState {
+    fn new() -> Self;
+    fn init(&mut self);
+    fn update_derived(&mut self);
+}
 
-    fn new(state: &Self::State, scope: Self::Scope<'_>) -> Result<Self, JsValue>
+struct Component<T: RootFragment> {
+    contents: T,
+    state: T::State,
+}
+
+impl<T: RootFragment> Component<T> {
+    fn new() -> Result<Self, JsValue> {
+        web_sys::console::log_1(&"Initializing Page component".into());
+
+        let state = T::State::new();
+        let contents = T::new(&state, ())?;
+        let mut new_page = Self { contents, state };
+
+        DIRTY_FLAGS.store(u64::MAX, SeqCst); // mark all as dirty for initial render
+        new_page.apply()?;
+
+        Ok(new_page)
+    }
+
+    fn mount(&self, add_method: impl AddMethod) -> Result<(), JsValue> {
+        self.contents.mount(add_method)
+    }
+
+    /// Process an event and return patches to apply to the DOM
+    ///
+    /// The target_path describes where the event took place.
+    /// This function will check if the current component is the target,
+    /// and if so run the corresponding user code for that event.
+    /// Otherwise, it will propagate the event to the correct child component to process.
+    ///
+    /// If handled by a child, the function checks for changes in bindable props and updates
+    /// the state of the current component accordingly, and marking them to be excluded from
+    /// propagation back down to the child to avoid feedback loops.
+    ///
+    /// Finally, it runs the apply function, to derived, generate patches,
+    /// and propagate any changes to children as needed.
+    fn proc(&mut self, e: web_sys::Event, target_path: Vec<u32>, _: ()) -> Result<(), JsValue> {
+        web_sys::console::log_1(
+            &format!(
+                "Processing event: {}, target path: {:?}",
+                e.type_(),
+                target_path
+            )
+            .into(),
+        );
+        // Event handling
+        self.contents.proc(&mut self.state, (), e, target_path)?;
+
+        self.apply()?;
+
+        Ok(())
+    }
+
+    /// Apply changes to the DOM based on the current state and dirty flags
+    fn apply(&mut self) -> Result<(), JsValue> {
+        let state = &mut self.state;
+
+        // update derived
+        state.update_derived();
+
+        // generate patches based on dirty flags
+        let flag_snapshot = DIRTY_FLAGS.load(SeqCst);
+
+        self.contents.update(state, (), flag_snapshot)?;
+
+        // Restore snapshot
+        DIRTY_FLAGS.store(flag_snapshot, SeqCst);
+
+        Ok(())
+    }
+}
+
+trait RootFragment {
+    type State: ComponentState;
+
+    fn new(state: &Self::State, scope: ()) -> Result<Self, JsValue>
     where
         Self: Sized;
     fn mount(&self, add_method: impl AddMethod) -> Result<(), JsValue>;
     fn proc(
         &mut self,
         state: &mut Self::State,
-        scope: Self::Scope<'_>,
+        scope: (),
         e: web_sys::Event,
         target_path: Vec<u32>,
     ) -> Result<(), JsValue>;
-    fn update(
-        &mut self,
-        state: &mut Self::State,
-        scope: Self::Scope<'_>,
-        flags: u64,
-    ) -> Result<(), JsValue>;
+    fn update(&mut self, state: &mut Self::State, scope: (), flags: u64) -> Result<(), JsValue>;
     fn unmount(&self);
 }
 
@@ -153,7 +225,8 @@ impl<T: IfContentTrait> GenericFragment for IfElement<T> {
 
     fn mount(&self, parent: &Element, add_method: impl AddMethod) -> Result<(), JsValue> {
         add_method(&self.comment)?;
-        self.content_enum.mount(parent, comment_insert_closure(&self.comment, parent))
+        self.content_enum
+            .mount(parent, comment_insert_closure(&self.comment, parent))
     }
 
     fn proc(
@@ -179,7 +252,8 @@ impl<T: IfContentTrait> GenericFragment for IfElement<T> {
 
             // Mount new content
             self.content_enum = T::new(state, scope)?;
-            self.content_enum.mount(parent, comment_insert_closure(&self.comment, parent))?;
+            self.content_enum
+                .mount(parent, comment_insert_closure(&self.comment, parent))?;
         }
         self.content_enum.update(parent, state, scope, flags)
     }
@@ -205,7 +279,8 @@ trait EachContentTrait {
     // State, Scope (internal references in nested tuples)
     type Item: std::hash::Hash;
 
-    fn generate(state: &Self::State, scope: Self::Scope<'_>, flags: u64) -> Option<Vec<Self::Item>>;
+    fn generate(state: &Self::State, scope: Self::Scope<'_>, flags: u64)
+        -> Option<Vec<Self::Item>>;
     fn new(state: &Self::State, scope: (Self::Scope<'_>, &Self::Item)) -> Result<Self, JsValue>
     where
         Self: Sized;
@@ -472,7 +547,7 @@ fn comment_insert_closure<'a>(comment: &'a Comment, parent: &'a Element) -> impl
 }
 
 thread_local! {
-    pub static PAGE: RefCell<Option<Page>> = RefCell::new(None);
+    pub static PAGE: RefCell<Option<Component<PageRootFrag>>> = RefCell::new(None);
 }
 
 #[wasm_bindgen]
@@ -483,7 +558,8 @@ pub fn mount() -> Result<(), JsValue> {
         let document = window.document().expect("no document on window");
         let body = document.body().expect("document should have a body");
 
-        let new_page = Page::new(child_append_closure(&body))?;
+        let new_page = Component::<PageRootFrag>::new()?;
+        new_page.mount(child_append_closure(&body))?;
         *page.borrow_mut() = Some(new_page);
         web_sys::console::log_1(&"Page component mounted".into());
         Ok(())

@@ -90,7 +90,7 @@ pub struct PageRootFrag {
 impl RootFragment for PageRootFrag {
     type State = PageState;
 
-    fn new(state: &Self::State, scope: ()) -> Result<Self, JsValue> {
+    fn new(state: &Self::State, scope: (), current_path: &Vec<u32>) -> Result<Self, JsValue> {
         let window = web_sys::window().expect("no global window exists");
         let document = window.document().expect("no document on window");
 
@@ -99,16 +99,16 @@ impl RootFragment for PageRootFrag {
         let el2 = document.create_element("button")?;
         let el3 = document.create_element("p")?;
         let el4 = document.create_element("p")?;
-        let el5 = IfElement::new(state, scope)?;
-        let el6 = EachElement::new(state, scope)?;
+        let el5 = IfElement::new(state, scope, &prepend_path(current_path, 5))?;
+        let el6 = EachElement::new(state, scope, &prepend_path(current_path, 6))?;
         let el7 = document.create_element("div")?;
         let el8 = document.create_element("p")?;
-        let el9 = Component::<ButtonRootFrag>::new()?;
+        let el9 = Component::<ButtonRootFrag>::new(&prepend_path(current_path, 3))?;
 
         // target paths are static and unique to each fragment
         // listeners are in new() to preserve them if moved (unmounted & remounted)
-        add_listener(&el1, "click", vec![1])?;
-        add_listener(&el2, "click", vec![2])?;
+        add_listener(&el1, "click", prepend_path(current_path, 1))?;
+        add_listener(&el2, "click", prepend_path(current_path, 2))?;
 
         Ok(Self {
             a: el0,
@@ -190,12 +190,7 @@ impl RootFragment for PageRootFrag {
         Ok(())
     }
 
-    fn update(
-        &mut self,
-        state: &mut Self::State,
-        scope: (),
-        flags: u64,
-    ) -> Result<(), JsValue> {
+    fn update(&mut self, state: &mut Self::State, scope: (), flags: u64) -> Result<(), JsValue> {
         web_sys::console::log_1(&format!("Updating PageRootFrag with flags: {:b}", flags).into());
         // counter changed
         if flags & 1 << 0 != 0 {
@@ -269,11 +264,11 @@ impl IfContentTrait for If1Content {
         }
     }
 
-    fn new(state: &Self::State, scope: Self::Scope<'_>) -> Result<Self, JsValue> {
+    fn new(state: &Self::State, scope: Self::Scope<'_>, current_path: &Vec<u32>) -> Result<Self, JsValue> {
         Ok(if *state.counter > 5 {
-            Self::If(IfBranch1::new(state, scope)?)
+            Self::If(IfBranch1::new(state, scope, current_path)?)
         } else {
-            Self::Else(IfBranch2::new(state, scope)?)
+            Self::Else(IfBranch2::new(state, scope, current_path)?)
         })
     }
 
@@ -330,7 +325,7 @@ impl GenericFragment for IfBranch1 {
     type State = PageState;
     type Scope<'a> = ();
 
-    fn new(state: &Self::State, scope: Self::Scope<'_>) -> Result<Self, JsValue> {
+    fn new(state: &Self::State, scope: Self::Scope<'_>, current_path: &Vec<u32>) -> Result<Self, JsValue> {
         let window = web_sys::window().expect("no global window exists");
         let document = window.document().expect("no document on window exists");
 
@@ -384,20 +379,26 @@ impl GenericFragment for IfBranch1 {
 
 struct IfBranch2 {
     a: Element,
+    b: Component<ButtonRootFrag>,
 }
 
 impl GenericFragment for IfBranch2 {
     type State = PageState;
     type Scope<'a> = ();
 
-    fn new(state: &Self::State, scope: Self::Scope<'_>) -> Result<Self, JsValue> {
+    fn new(
+        state: &Self::State,
+        scope: Self::Scope<'_>,
+        current_path: &Vec<u32>,
+    ) -> Result<Self, JsValue> {
         let window = web_sys::window().expect("no global window exists");
         let document = window.document().expect("no document on window exists");
 
         let el5_else = document.create_element("p")?;
         el5_else.set_inner_html("Counter is 5 or less.");
+        let b = Component::<ButtonRootFrag>::new(&prepend_path(current_path, 1))?; // target path is in reverse order!!
 
-        Ok(Self { a: el5_else })
+        Ok(Self { a: el5_else, b })
     }
 
     fn mount(&self, parent: &Element, add_method: impl AddMethod) -> Result<(), JsValue> {
@@ -455,7 +456,7 @@ impl EachContentTrait for EachFrag1 {
         }
     }
 
-    fn new(state: &Self::State, scope: (Self::Scope<'_>, &Self::Item)) -> Result<Self, JsValue> {
+    fn new(state: &Self::State, scope: (Self::Scope<'_>, &Self::Item), current_path: &Vec<u32>) -> Result<Self, JsValue> {
         let (_, item) = scope;
 
         let window = web_sys::window().expect("no global window exists");
@@ -463,7 +464,7 @@ impl EachContentTrait for EachFrag1 {
 
         let node_1 = document.create_element("p")?;
         node_1.set_inner_html(&format!("Number: {}", item));
-        let node_2 = IfElement::new(state, scope)?;
+        let node_2 = IfElement::new(state, scope, current_path)?;
         Ok(Self {
             a: node_1,
             b: node_2,
@@ -519,7 +520,7 @@ impl IfContentTrait for If2Content {
         false // no dynamic content in this example, so branch never changes after initial render
     }
 
-    fn new(_state: &Self::State, scope: Self::Scope<'_>) -> Result<Self, JsValue> {
+    fn new(_state: &Self::State, scope: Self::Scope<'_>, current_path: &Vec<u32>) -> Result<Self, JsValue> {
         let (_, a_scope) = scope;
         let window = web_sys::window().expect("no global window exists");
         let document = window.document().expect("no document on window exists");
@@ -614,31 +615,28 @@ struct ButtonRootFrag {
 impl RootFragment for ButtonRootFrag {
     type State = ButtonState;
 
-    fn new(state: &Self::State, scope: ()) -> Result<Self, JsValue>
+    fn new(state: &Self::State, scope: (), current_path: &Vec<u32>) -> Result<Self, JsValue>
     where
         Self: Sized,
     {
         let window = web_sys::window().expect("no global window exists");
         let document = window.document().expect("no document on window");
 
-        let el0 = document.create_element("div")?;
-        let el1 = document.create_element("button")?;
-        let el2 = document.create_element("button")?;
-        el2.set_inner_html("Set parent");
-        Ok(Self {
-            a: el0,
-            b: el1,
-            c: el2,
-        })
+        let a = document.create_element("div")?;
+        let b = document.create_element("button")?;
+        let c = document.create_element("button")?;
+        c.set_inner_html("Set parent");
+
+        add_listener(&b, "click", prepend_path(current_path, 1))?; // target path is in reverse order!!
+        add_listener(&c, "click", prepend_path(current_path, 2))?;
+
+        Ok(Self { a, b, c })
     }
 
     fn mount(&self, add_method: impl AddMethod) -> Result<(), JsValue> {
         add_method(&self.a)?;
         self.a.append_child(&self.b)?;
         self.a.append_child(&self.c)?;
-
-        add_listener(&self.b, "click", vec![1, 3])?; // target path is in reverse order!!
-        add_listener(&self.c, "click", vec![2, 3])?;
 
         Ok(())
     }
@@ -665,12 +663,7 @@ impl RootFragment for ButtonRootFrag {
         Ok(())
     }
 
-    fn update(
-        &mut self,
-        state: &mut Self::State,
-        scope: (),
-        flags: u64,
-    ) -> Result<(), JsValue> {
+    fn update(&mut self, state: &mut Self::State, scope: (), flags: u64) -> Result<(), JsValue> {
         if flags & 1 << 0 != 0 {
             self.b
                 .set_inner_html(&format!("{}: {}", state.text, *state.button_counter));

@@ -74,7 +74,7 @@ impl PageState {
     }
 }
 
-pub struct PageRootFrag {
+pub struct CPageRootFrag {
     a: Element,
     b: Element,
     c: Element,
@@ -87,7 +87,7 @@ pub struct PageRootFrag {
     j: Component<ButtonRootFrag>,
 }
 
-impl RootFragment for PageRootFrag {
+impl RootFragment for CPageRootFrag {
     type State = PageState;
 
     fn new(state: &Self::State, scope: (), current_path: &Vec<u32>) -> Result<Self, JsValue> {
@@ -190,7 +190,7 @@ impl RootFragment for PageRootFrag {
         Ok(())
     }
 
-    fn update(&mut self, state: &mut Self::State, scope: (), flags: u64) -> Result<(), JsValue> {
+    fn update(&mut self, state: &Self::State, scope: (), flags: u64) -> Result<(), JsValue> {
         web_sys::console::log_1(&format!("Updating PageRootFrag with flags: {:b}", flags).into());
         // counter changed
         if flags & 1 << 0 != 0 {
@@ -432,7 +432,6 @@ impl GenericFragment for IfBranch2 {
     }
 }
 
-#[derive(Clone)]
 struct EachFrag1 {
     // No need to store the comment here since it's stored in the EachElement struct
     a: Element,
@@ -477,8 +476,8 @@ impl EachContentTrait for EachFrag1 {
     }
 
     fn proc(
-        &self,
-        _state: &Self::State,
+        &mut self,
+        _state: &mut Self::State,
         _scope: (Self::Scope<'_>, &Self::Item),
         _e: web_sys::Event,
         _target_path: Vec<u32>,
@@ -507,7 +506,6 @@ impl EachContentTrait for EachFrag1 {
 }
 
 // TODO: this should be an enum
-#[derive(Clone)]
 struct If2Content {
     a: Element,
 }
@@ -663,7 +661,7 @@ impl RootFragment for ButtonRootFrag {
         Ok(())
     }
 
-    fn update(&mut self, state: &mut Self::State, scope: (), flags: u64) -> Result<(), JsValue> {
+    fn update(&mut self, state: &Self::State, scope: (), flags: u64) -> Result<(), JsValue> {
         if flags & 1 << 0 != 0 {
             self.b
                 .set_inner_html(&format!("{}: {}", state.text, *state.button_counter));

@@ -45,12 +45,27 @@ impl<T> DerefMut for MutateTracker<T> {
 }
 
 trait ComponentState {
-    fn new() -> Self;
+    type Props; // ex. (n, word), should be owned
+
+    fn new(props: Self::Props) -> Self;
     fn init(&mut self);
     fn update_derived(&mut self);
 }
 
-struct Component<T: RootFragment> {
+trait ComponentStateExt: ComponentState {
+    fn startup(props: Self::Props) -> Self;
+}
+
+impl<T: ComponentState> ComponentStateExt for T {
+    fn startup(props: Self::Props) -> Self {
+        let mut state = Self::new(props);
+        state.init();
+        state.update_derived();
+        state
+    }
+}
+
+struct Component<T: GenericFragment> {
     contents: T,
     state: T::State,
 }

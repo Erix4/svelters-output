@@ -26,6 +26,8 @@ pub struct PageState {
 }
 
 impl ComponentState for PageState {
+    type Props = (); // no props in page root!
+
     fn init(&mut self) {
         //let mut other_var = 42;
         //other_var += 1;
@@ -33,8 +35,8 @@ impl ComponentState for PageState {
         *self.counter += 1;
     }
 
-    fn new() -> Self {
-        let mut state = PageState {
+    fn new(props: Self::Props) -> Self {
+        PageState {
             counter: MutateTracker::new(0, 0),
             my_struct: MutateTracker::new(
                 MyStruct {
@@ -44,10 +46,7 @@ impl ComponentState for PageState {
                 1,
             ),
             counter_plus_one: 0,
-        };
-        state.init();
-
-        state
+        }
     }
 
     fn update_derived(&mut self) {
@@ -98,12 +97,22 @@ impl RootFragment for CPageRootFrag {
         let el1 = document.create_element("button")?;
         let el2 = document.create_element("button")?;
         let el3 = document.create_element("p")?;
+        el3.set_inner_html(&format!("Count: {}", *state.counter));
         let el4 = document.create_element("p")?;
         let el5 = IfElement::new(state, scope, &prepend_path(current_path, 5))?;
         let el6 = EachElement::new(state, scope, &prepend_path(current_path, 6))?;
         let el7 = document.create_element("div")?;
         let el8 = document.create_element("p")?;
-        let el9 = Component::<ButtonRootFrag>::new(&prepend_path(current_path, 3))?;
+        let mut el9_state = <ButtonRootFrag as GenericFragment>::State::startup((state.my_struct.b.clone(),)); // create state with props
+        DIRTY_FLAGS.fetch_or(1 << 0, SeqCst);
+        let el9 = Component::<ButtonRootFrag>::new(el9_state, &prepend_path(current_path, 3))?;
+        el4.set_inner_html(&format!("Struct B: {}", state.my_struct.b));
+        el8.set_inner_html(&format!("Counter plus one: {}", state.counter_plus_one));
+        el2.set_inner_html(&format!(
+            "Struct A: {} (Click to update)",
+            state.my_struct.a
+        ));
+        el4.set_inner_html(&format!("Struct B: {}", state.my_struct.b));
 
         // target paths are static and unique to each fragment
         // listeners are in new() to preserve them if moved (unmounted & remounted)
@@ -585,18 +594,18 @@ struct ButtonState {
 }
 
 impl ComponentState for ButtonState {
+    type Props = (String,); // text prop
+
     fn init(&mut self) {
         // Initialize any state if needed
     }
 
-    fn new() -> Self {
-        let mut state = ButtonState {
-            text: "".to_string(),
+    fn new(props: Self::Props) -> Self {
+        ButtonState {
+            text: props.0,
             func_call: 0,
             button_counter: MutateTracker::new(0, 0),
-        };
-        state.init();
-        state
+        }
     }
 
     fn update_derived(&mut self) {

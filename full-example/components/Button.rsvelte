@@ -1,0 +1,25 @@
+<script>
+    struct $state {
+        text: String = $prop(),
+        func: fn(i32) = $prop(),
+
+        button_counter = $state(0),
+    }
+</script>
+
+<div>
+    <button onclick={|$state| {state.button_counter += 1} }>
+        {text}: {button_counter}
+    </button>
+    <button onclick={|$state| {func(state.button_counter)} }>
+        Set parent
+    </button>
+</div>
+
+<style>
+    button {
+        padding: 0.5em 1em;
+        font-size: 1em;
+        cursor: pointer;
+    }
+</style>

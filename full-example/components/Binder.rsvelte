@@ -1,0 +1,15 @@
+<script>
+    struct $state {
+        count = $state(0); // needs a default (unless there is a Default::default() impl & specified type)
+        count2 = $state(0);
+        output: i32 = $bindable(); // needs default value or type, will be set to the value of the first bind on init
+    }
+</script>
+
+<Bindee bind:count={count} />
+<Bindee bind:count={|| count2, |v| {
+        let diff = v - count2;
+        count2 = v;
+        output += diff;
+    }
+} />

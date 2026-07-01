@@ -1,0 +1,66 @@
+<script>
+    struct $state {
+        current_snippet: $bindable(test1),
+    }
+
+    impl $state {
+        fn switch_snippet(&mut self) {
+            if self.current_snippet == test1 {
+                self.current_snippet = test2;
+            } else {
+                self.current_snippet = test1;
+            }
+        }
+    }
+</script>
+
+<button onclick={switch_snippet}>
+    Switch Snippet
+</button>
+<#snippet test1(n: String)>
+    <p>{n}</p>
+</snippet>
+<#snippet test2(n: String)>
+    <h1>{n}</h1>
+</snippet>
+
+{#each (0..5) as i}
+    <#snippet test_each(n: String)> <!-- this is a separate snippet for each i -->
+        <p>{n} from snippet {i}</p>
+    </snippet>
+    <button onclick={|| current_snippet = test_each;}>Snippet {i}</button>
+{/each}
+
+{@render current_snippet("Hello, world!") }
+
+<!--
+Notes about snippets:
+ - Snippets are rendered the scope which they're defined in
+ - When a snippet is passed as a prop or a bindable, it uses
+    the scope and state of the defining component, but the props of the calling component.
+ - Snippets, as long as they have the same props, have the same type and can be set to
+    state variables.
+ - Only snippets in the top level (`()`) scope are available on init to be assigned to state variables
+ - Snippets defined in some scope can only be rendered or passed down in that or a child scope,
+    but not in a parent or sibling scope.
+ - A snippet can be passed as a prop to a state function from within a child scope, and acts like a
+    closure that captures the state of the defining scope at the time it's called, but uses the props
+    of the calling scope.
+ - Snippets cannot be solely owned by the rendering component because they need to maintain reactivity
+    with the defining component, however there may be several instances with various props and different
+    reactivity update masks, so separate instances do need to be maintained
+
+Ideas:
+ - having references is problematic because the lifetime of child components is not guaranteed in the bindable case,
+    implies one of the following:
+        - uses of state & scope must be cloned, requiring Clone bounds on all state and scope types
+        - the snippet content must be stored in some kind of Rc<RefCell<>>
+        - uses of state & scope must be re-rendered into contents (not possible if expressions contain both state and props)
+        - references must be re-acquired on each re-render, meaning traversal into defining component
+            - could add a special dirty flag related to snippet source re-renders to acquire references
+            - still could cause lifetime issues if the references are stored anywhere
+ - a new kind of trait which takes in snippet props and, based on 
+
+|props| { |state, scope| snippet } -> |props| { snippet_closure } -> evaluated_snippet
+        - however it's not a true closure because it has deep reactivity in both the defining and calling scopes
+-->

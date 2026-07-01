@@ -1,5 +1,5 @@
 <script>
-    import Button from "./Button.rsvelte";
+    import Button from "$components/Button.rsvelte";
 
     struct MyStruct {
         a: i32,

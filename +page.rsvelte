@@ -64,4 +64,12 @@
     <div>
         <p>Counter plus one: {counter_plus_one}</p>
     </div>
+
+    <!-- TODO: add snippets & comment handling -->
+    {#snippet hello(name)}
+        <p>Hello, {name}!</p>
+    {/snippet}
+
+    {@render hello("Alice")}
+    {@render hello("Bob")}
 </div>

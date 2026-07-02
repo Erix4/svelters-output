@@ -1,3 +1,5 @@
+// static
+
 use std::{
     cell::RefCell,
     ops::{Deref, DerefMut},
@@ -8,11 +10,11 @@ use wasm_bindgen::{
     prelude::{wasm_bindgen, Closure},
     JsCast, JsValue,
 };
-use web_sys::{Comment, Element, Node};
+use web_sys::{Comment, Element, Node, Text};
 
-use crate::state::page::CPageRootFrag;
+use crate::generated::RootFrag;
 
-mod state;
+mod generated;
 
 pub static DIRTY_FLAGS: AtomicU64 = AtomicU64::new(0);
 
@@ -675,7 +677,7 @@ fn comment_insert_closure<'a>(comment: &'a Comment, parent: &'a Element) -> impl
 }
 
 thread_local! {
-    pub static PAGE: RefCell<Option<Component<CPageRootFrag>>> = RefCell::new(None);
+    pub static PAGE: RefCell<Option<Component<RootFrag>>> = RefCell::new(None);
 }
 
 #[wasm_bindgen]
@@ -686,8 +688,8 @@ pub fn mount() -> Result<(), JsValue> {
         let document = window.document().expect("no document on window");
         let body = document.body().expect("document should have a body");
 
-        let state = <CPageRootFrag as GenericFragment>::State::startup(());
-        let mut new_page = Component::<CPageRootFrag>::new(state, &vec![])?;
+        let state = <RootFrag as GenericFragment>::State::startup(());
+        let mut new_page = Component::<RootFrag>::new(state, &vec![])?;
         new_page.mount(&body, child_append_closure(&body))?;
         *page.borrow_mut() = Some(new_page);
         web_sys::console::log_1(&"Page component mounted".into());

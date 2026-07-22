@@ -34,18 +34,20 @@ impl ComponentState for PageState {
         *self.counter += 1;
     }
 
-    fn new(props: Self::Props) -> Self {
-        PageState {
-            counter: MutateTracker::new(0, 0),
-            my_struct: MutateTracker::new(
-                MyStruct {
-                    a: 10,
-                    b: "hello".to_string(),
-                },
-                1,
-            ),
-            counter_plus_one: 0,
-        }
+    fn new(props: Self::Props) -> Rc<RefCell<Self>> {
+        Rc::new_cyclic(|weak_state| {
+            RefCell::new(PageState {
+                counter: MutateTracker::new(0, 0),
+                my_struct: MutateTracker::new(
+                    MyStruct {
+                        a: 10,
+                        b: "hello".to_string(),
+                    },
+                    1,
+                ),
+                counter_plus_one: 0,
+            })
+        })
     }
 
     fn update_derived(&mut self) {
@@ -87,11 +89,13 @@ pub struct RootFrag {
 
 impl GenericFragment for RootFrag {
     type State = PageState;
-    type Scope<'a> = ();
+    type Scope = ();
 
-    fn new(state: &Self::State, scope: (), current_path: &Vec<u32>) -> Result<Self, JsValue> {
+    fn new(state_rc: Rc<RefCell<Self::State>>, scope: (), current_path: &Vec<u32>) -> Result<Self, JsValue> {
         let window = web_sys::window().expect("no global window exists");
         let document = window.document().expect("no document on window");
+        let state_rc_clone = state_rc.clone();
+        let state = state_rc.borrow();
 
         let el0 = document.create_element("div")?;
         let el1 = document.create_element("button")?;
@@ -100,8 +104,8 @@ impl GenericFragment for RootFrag {
         let el3 = document.create_element("p")?;
         el3.set_inner_html(&format!("Count: {}", *state.counter));
         let el4 = document.create_element("p")?;
-        let el5 = IfElement::new(state, scope, &prepend_path(current_path, 5))?;
-        let el6 = EachElement::new(state, scope, &prepend_path(current_path, 6))?;
+        let el5 = IfElement::new(state_rc_clone.clone(), scope, &prepend_path(current_path, 5))?;
+        let el6 = EachElement::new(state_rc_clone, scope, &prepend_path(current_path, 6))?;
         let el7 = document.create_element("div")?;
         let el8 = document.create_element("p")?;
         let mut el9_state =
@@ -135,15 +139,15 @@ impl GenericFragment for RootFrag {
         })
     }
 
-    fn mount(&mut self, parent: &Element, add_method: impl AddMethod) -> Result<(), JsValue> {
+    fn mount(&mut self, parent: &Element, add_method: &dyn AddMethod) -> Result<(), JsValue> {
         add_method(&self.a)?;
         self.a.append_child(&self.b)?;
         self.a.append_child(&self.c)?;
-        self.j.mount(&self.a, child_append_closure(&self.a))?; // TODO: remove parent path & update button
+        self.j.mount(&self.a, &child_append_closure(&self.a))?; // TODO: remove parent path & update button
         self.a.append_child(&self.d)?;
         self.a.append_child(&self.e)?;
-        self.f.mount(&self.a, child_append_closure(&self.a))?;
-        self.g.mount(&self.a, child_append_closure(&self.a))?;
+        self.f.mount(&self.a, &child_append_closure(&self.a))?;
+        self.g.mount(&self.a, &child_append_closure(&self.a))?;
         self.a.append_child(&self.h)?;
         self.h.append_child(&self.i)?;
         Ok(())
@@ -151,7 +155,7 @@ impl GenericFragment for RootFrag {
 
     fn proc(
         &mut self,
-        state: &mut Self::State,
+        state: Rc<RefCell<Self::State>>,
         scope: (),
         e: web_sys::Event,
         mut target_path: Vec<u32>,
@@ -168,13 +172,16 @@ impl GenericFragment for RootFrag {
         );
         match e.type_().as_str() {
             "click" if target == 1 => {
+                let mut state = state.borrow_mut();
                 state.increment();
             }
             "click" if target == 2 => {
+                let mut state = state.borrow_mut();
                 (|| state.update_struct(true))();
             }
             // target is in button component
             _ if target == 3 => {
+                let mut state = state.borrow_mut();
                 self.j.proc(scope, e, target_path)?;
                 let child_bindable_flags = DIRTY_FLAGS.load(SeqCst);
                 DIRTY_FLAGS.store(0, SeqCst); // reset for parent processing
@@ -188,7 +195,7 @@ impl GenericFragment for RootFrag {
                     // Run user defined closure with bound function call
                     (|new_val| {
                         *state.counter = new_val;
-                    })(self.j.state.func_call);
+                    })(self.j.state.borrow_mut().func_call);
                 }
             }
             _ if target == 6 => {
@@ -204,10 +211,14 @@ impl GenericFragment for RootFrag {
     fn update(
         &mut self,
         parent: &Element,
-        state: &Self::State,
+        state_rc: Rc<RefCell<Self::State>>,
         scope: (),
         flags: u64,
     ) -> Result<(), JsValue> {
+        let state_rc_clone = state_rc.clone();
+        let state= state_rc.borrow();
+        let state_rc = state_rc_clone;
+
         web_sys::console::log_1(&format!("Updating PageRootFrag with flags: {:b}", flags).into());
         // counter changed
         if flags & 1 << 0 != 0 {
@@ -217,8 +228,8 @@ impl GenericFragment for RootFrag {
             self.d.set_inner_html(&format!("Count: {}", *state.counter));
         }
 
-        self.f.update(&self.a, state, scope, flags)?;
-        self.g.update(&self.a, state, scope, flags)?;
+        self.f.update(&self.a, state_rc.clone(), scope, flags)?;
+        self.g.update(&self.a, state_rc, scope, flags)?;
 
         // my_struct changed
         if flags & 1 << 1 != 0 {
@@ -244,7 +255,7 @@ impl GenericFragment for RootFrag {
 
             // Update props for button
             if flags & 1 << 1 != 0 {
-                self.j.state.text = state.my_struct.b.clone(); // my_struct.b is the given expression
+                self.j.state.borrow_mut().text = state.my_struct.b.clone(); // my_struct.b is the given expression
                 DIRTY_FLAGS.fetch_or(1 << 0, SeqCst); // manually mark prop as dirty
             }
 
@@ -266,10 +277,12 @@ enum If1Content {
 }
 
 impl IfContentTrait for If1Content {
-    type Scope<'a> = ();
+    type Scope = ();
     type State = PageState;
 
-    fn branch_changed(&self, state: &Self::State, _scope: Self::Scope<'_>, flags: u64) -> bool {
+    fn branch_changed(&self, state_rc: Rc<RefCell<Self::State>>, _scope: Self::Scope, flags: u64) -> bool {
+        let state = state_rc.borrow();
+
         if flags & 1 << 0 != 0 {
             match self {
                 Self::If(_) if *state.counter > 5 => false,
@@ -282,18 +295,22 @@ impl IfContentTrait for If1Content {
     }
 
     fn new(
-        state: &Self::State,
-        scope: Self::Scope<'_>,
+        state_rc: Rc<RefCell<Self::State>>,
+        scope: Self::Scope,
         current_path: &Vec<u32>,
     ) -> Result<Self, JsValue> {
+        let state_rc_clone = state_rc.clone();
+        let state = state_rc.borrow();
+        let state_rc = state_rc_clone;
+
         Ok(if *state.counter > 5 {
-            Self::If(IfBranch1::new(state, scope, current_path)?)
+            Self::If(IfBranch1::new(state_rc, scope, current_path)?)
         } else {
-            Self::Else(IfBranch2::new(state, scope, current_path)?)
+            Self::Else(IfBranch2::new(state_rc, scope, current_path)?)
         })
     }
 
-    fn mount(&mut self, parent: &Element, add_method: impl AddMethod) -> Result<(), JsValue> {
+    fn mount(&mut self, parent: &Element, add_method: &dyn AddMethod) -> Result<(), JsValue> {
         match self {
             Self::If(contents) => contents.mount(parent, add_method),
             Self::Else(contents) => contents.mount(parent, add_method),
@@ -302,8 +319,8 @@ impl IfContentTrait for If1Content {
 
     fn proc(
         &mut self,
-        state: &mut Self::State,
-        scope: Self::Scope<'_>,
+        state: Rc<RefCell<Self::State>>,
+        scope: Self::Scope,
         e: web_sys::Event,
         target_path: Vec<u32>,
     ) -> Result<(), JsValue> {
@@ -317,8 +334,8 @@ impl IfContentTrait for If1Content {
     fn update(
         &mut self,
         parent: &Element,
-        state: &Self::State,
-        scope: Self::Scope<'_>,
+        state: Rc<RefCell<Self::State>>,
+        scope: Self::Scope,
         flags: u64,
     ) -> Result<(), JsValue> {
         // Check for changes in content of active branch
@@ -344,15 +361,16 @@ struct IfBranch1 {
 
 impl GenericFragment for IfBranch1 {
     type State = PageState;
-    type Scope<'a> = ();
+    type Scope = ();
 
     fn new(
-        state: &Self::State,
-        scope: Self::Scope<'_>,
+        state_rc: Rc<RefCell<Self::State>>,
+        scope: Self::Scope,
         current_path: &Vec<u32>,
     ) -> Result<Self, JsValue> {
         let window = web_sys::window().expect("no global window exists");
         let document = window.document().expect("no document on window exists");
+        let state= state_rc.borrow();
 
         let el5_if = document.create_element("p")?;
         let el5_text_1 = document.create_text_node("Counter is greater than 5! ");
@@ -365,7 +383,7 @@ impl GenericFragment for IfBranch1 {
         })
     }
 
-    fn mount(&mut self, _parent: &Element, add_method: impl AddMethod) -> Result<(), JsValue> {
+    fn mount(&mut self, _parent: &Element, add_method: &dyn AddMethod) -> Result<(), JsValue> {
         add_method(&self.a)?;
         self.a.append_child(&self.b)?;
         self.a.append_child(&self.c)?;
@@ -374,8 +392,8 @@ impl GenericFragment for IfBranch1 {
 
     fn proc(
         &mut self,
-        state: &mut Self::State,
-        scope: Self::Scope<'_>,
+        state: Rc<RefCell<Self::State>>,
+        scope: Self::Scope,
         e: web_sys::Event,
         target_path: Vec<u32>,
     ) -> Result<(), JsValue> {
@@ -386,10 +404,12 @@ impl GenericFragment for IfBranch1 {
     fn update(
         &mut self,
         _parent: &Element,
-        state: &Self::State,
-        _scope: Self::Scope<'_>,
+        state_rc: Rc<RefCell<Self::State>>,
+        _scope: Self::Scope,
         flags: u64,
     ) -> Result<(), JsValue> {
+        let state = state_rc.borrow();
+
         if flags & 1 << 1 != 0 {
             self.b
                 .set_text_content(Some(&format!("{}", state.my_struct.a)));
@@ -409,15 +429,16 @@ struct IfBranch2 {
 
 impl GenericFragment for IfBranch2 {
     type State = PageState;
-    type Scope<'a> = ();
+    type Scope = ();
 
     fn new(
-        state: &Self::State,
-        scope: Self::Scope<'_>,
+        state_rc: Rc<RefCell<Self::State>>,
+        scope: Self::Scope,
         current_path: &Vec<u32>,
     ) -> Result<Self, JsValue> {
         let window = web_sys::window().expect("no global window exists");
         let document = window.document().expect("no document on window exists");
+        let state = state_rc.borrow();
 
         let el5_else = document.create_element("p")?;
         el5_else.set_inner_html("Counter is 5 or less.");
@@ -429,15 +450,15 @@ impl GenericFragment for IfBranch2 {
         Ok(Self { a: el5_else, b })
     }
 
-    fn mount(&mut self, parent: &Element, add_method: impl AddMethod) -> Result<(), JsValue> {
+    fn mount(&mut self, parent: &Element, add_method: &dyn AddMethod) -> Result<(), JsValue> {
         add_method(&self.a)?;
         Ok(())
     }
 
     fn proc(
         &mut self,
-        _state: &mut Self::State,
-        _scope: Self::Scope<'_>,
+        _state: Rc<RefCell<Self::State>>,
+        _scope: Self::Scope,
         _e: web_sys::Event,
         _target_path: Vec<u32>,
     ) -> Result<(), JsValue> {
@@ -448,8 +469,8 @@ impl GenericFragment for IfBranch2 {
     fn update(
         &mut self,
         _parent: &Element,
-        _state: &Self::State,
-        _scope: Self::Scope<'_>,
+        _state: Rc<RefCell<Self::State>>,
+        _scope: Self::Scope,
         _flags: u64,
     ) -> Result<(), JsValue> {
         Ok(())
@@ -468,14 +489,16 @@ struct EachFrag1 {
 
 impl EachContentTrait for EachFrag1 {
     type Item = i32;
-    type Scope<'a> = ();
+    type Scope = ();
     type State = PageState;
 
     fn generate(
-        state: &Self::State,
-        _scope: Self::Scope<'_>,
+        state_rc: Rc<RefCell<Self::State>>,
+        _scope: Self::Scope,
         flags: u64,
     ) -> Option<Vec<Self::Item>> {
+        let state = state_rc.borrow();
+
         if flags & 1 << 0 != 0 {
             Some((0..*state.counter).collect())
         } else {
@@ -484,11 +507,11 @@ impl EachContentTrait for EachFrag1 {
     }
 
     fn new(
-        state: &Self::State,
-        scope: (Self::Scope<'_>, &Self::Item),
+        state: Rc<RefCell<Self::State>>,
+        scope: (Self::Scope, Rc<Self::Item>),
         current_path: &Vec<u32>,
     ) -> Result<Self, JsValue> {
-        let (_, item) = scope;
+        let (_, item) = scope.clone();
 
         let window = web_sys::window().expect("no global window exists");
         let document = window.document().expect("no document on window exists");
@@ -502,15 +525,15 @@ impl EachContentTrait for EachFrag1 {
         })
     }
 
-    fn mount(&mut self, parent: &Element, add_method: impl AddMethod) -> Result<(), JsValue> {
+    fn mount(&mut self, parent: &Element, add_method: &dyn AddMethod) -> Result<(), JsValue> {
         add_method(&self.a)?;
         Ok(())
     }
 
     fn proc(
         &mut self,
-        _state: &mut Self::State,
-        _scope: (Self::Scope<'_>, &Self::Item),
+        _state: Rc<RefCell<Self::State>>,
+        _scope: (Self::Scope, &Self::Item),
         _e: web_sys::Event,
         _target_path: Vec<u32>,
     ) -> Result<(), JsValue> {
@@ -523,8 +546,8 @@ impl EachContentTrait for EachFrag1 {
     fn update(
         &mut self,
         _parent: &Element,
-        _state: &Self::State,
-        _scope: (Self::Scope<'_>, &Self::Item),
+        _state: Rc<RefCell<Self::State>>,
+        _scope: (Self::Scope, Rc<Self::Item>),
         _flags: u64,
     ) -> Result<(), JsValue> {
         // No reactive stuff inside, otherwise updates would go here
@@ -543,16 +566,16 @@ struct If2Content {
 }
 
 impl IfContentTrait for If2Content {
-    type Scope<'a> = ((), &'a i32);
+    type Scope = ((), Rc<i32>);
     type State = PageState;
 
-    fn branch_changed(&self, _state: &Self::State, _scope: Self::Scope<'_>, _flags: u64) -> bool {
+    fn branch_changed(&self, _state: Rc<RefCell<Self::State>>, _scope: Self::Scope, _flags: u64) -> bool {
         false // no dynamic content in this example, so branch never changes after initial render
     }
 
     fn new(
-        _state: &Self::State,
-        scope: Self::Scope<'_>,
+        _state: Rc<RefCell<Self::State>>,
+        scope: Self::Scope,
         current_path: &Vec<u32>,
     ) -> Result<Self, JsValue> {
         let (_, a_scope) = scope;
@@ -565,24 +588,26 @@ impl IfContentTrait for If2Content {
         Ok(Self { a })
     }
 
-    fn mount(&mut self, parent: &Element, add_method: impl AddMethod) -> Result<(), JsValue> {
+    fn mount(&mut self, parent: &Element, add_method: &dyn AddMethod) -> Result<(), JsValue> {
         add_method(&self.a)?;
         Ok(())
     }
 
     fn proc(
         &mut self,
-        state: &mut Self::State,
-        scope: Self::Scope<'_>,
+        state_rc: Rc<RefCell<Self::State>>,
+        scope: Self::Scope,
         e: web_sys::Event,
         mut target_path: Vec<u32>,
     ) -> Result<(), JsValue> {
+        let mut state = state_rc.borrow_mut();
+
         // Handle events for content inside #each block if needed
         let (_, item) = scope;
         let target = target_path.pop().unwrap();
         match e.type_().as_str() {
             "click" if target == 0 => {
-                (|| *state.counter += item)();
+                (|| *state.counter += *item)();
             }
             _ => {}
         }
@@ -593,8 +618,8 @@ impl IfContentTrait for If2Content {
     fn update(
         &mut self,
         _parent: &Element,
-        _state: &Self::State,
-        scope: Self::Scope<'_>,
+        _state: Rc<RefCell<Self::State>>,
+        scope: Self::Scope,
         flags: u64,
     ) -> Result<(), JsValue> {
         let (_, item) = scope;

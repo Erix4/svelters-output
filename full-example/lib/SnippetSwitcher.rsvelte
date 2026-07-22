@@ -35,7 +35,7 @@
 
 <!--
 Notes about snippets:
- - Snippets are rendered the scope which they're defined in
+ - Snippets are rendered with the scope which they're defined in
  - When a snippet is passed as a prop or a bindable, it uses
     the scope and state of the defining component, but the props of the calling component.
  - Snippets, as long as they have the same props, have the same type and can be set to

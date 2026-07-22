@@ -3,6 +3,7 @@
 use std::{
     cell::RefCell,
     ops::{Deref, DerefMut},
+    rc::Rc,
     sync::atomic::{AtomicU64, Ordering::SeqCst},
     vec,
 };
@@ -57,101 +58,6 @@ trait RouterSnippetTrait {
     type PropMasks: Copy; // (mask, mask)
 }*/
 
-trait PeelFn<T: SnippetContentTrait> {
-    fn call<'a>(&self, scope: T::CallScope<'a>) -> T::Scope<'a>;
-}
-
-struct Snippet<T: SnippetContentTrait, Peel: PeelFn<T>> {
-    contents: T,
-    props: T::Props,
-    prop_closures: T::PropClosures,
-    prop_masks: T::PropMasks,
-    peel_closure: Peel,
-}
-
-impl<T: SnippetContentTrait, Peel: PeelFn<T>> Snippet<T, Peel> {
-    fn new(
-        state: &T::State,
-        scope: T::CallScope<'_>,
-        current_path: &Vec<u32>,
-        prop_closure: T::PropClosures,
-        prop_masks: T::PropMasks,
-        peel_closure: Peel,
-    ) -> Result<Self, JsValue> {
-        let scope = peel_closure.call(scope);
-        let props = T::init_props(state, scope, &prop_closure);
-        let contents = T::new(state, (scope, &props), current_path)?;
-        Ok(Self {
-            contents,
-            props,
-            prop_closures: prop_closure,
-            prop_masks,
-            peel_closure,
-        })
-    }
-
-    fn mount(&mut self, parent: &Element, add_method: impl AddMethod) -> Result<(), JsValue> {
-        self.contents.mount(parent, add_method)
-    }
-
-    fn proc(&mut self, state: &mut T::State, scope: T::CallScope<'_>, e: web_sys::Event, target_path: Vec<u32>) -> Result<(), JsValue> {
-        let scope = self.peel_closure.call(scope);
-        self.contents.proc(state, scope, e, target_path)
-    }
-
-    fn update(&mut self, parent: &Element, state: &T::State, scope: T::CallScope<'_>, mut flags: u64) -> Result<(), JsValue> {
-        let scope = self.peel_closure.call(scope);
-        T::update_props(&mut self.props, state, scope, &self.prop_closures, self.prop_masks, &mut flags);
-        self.contents.update(parent, state, scope, flags)
-    }
-
-    fn unmount(&self) {
-        self.contents.unmount();
-    }
-}
-
-trait SnippetContentTrait {
-    type State;
-    type Scope<'a>: Copy; // this can implement Copy 'cause it's all references
-    type CallScope<'a>: Copy;
-    type Props; // ex. (n, word)
-    type PropClosures; // (|| -> n, || -> word)
-    type PropMasks: Copy; // (mask, mask)
-
-    fn init_props(state: &Self::State, scope: Self::Scope<'_>, closures: &Self::PropClosures,) -> Self::Props where Self: Sized;
-    fn update_props(
-        props: &mut Self::Props,
-        state: &Self::State,
-        scope: Self::Scope<'_>,
-        closures: &Self::PropClosures,
-        masks: Self::PropMasks,
-        flags: &mut u64,
-    ) where Self: Sized;
-    fn new(
-        state: &Self::State,
-        scope: (Self::Scope<'_>, &Self::Props),
-        current_path: &Vec<u32>,
-    ) -> Result<Self, JsValue>
-    where
-        Self: Sized;
-    fn mount(&mut self, parent: &Element, add_method: impl AddMethod) -> Result<(), JsValue>;
-    fn proc(
-        &mut self,
-        state: &mut Self::State,
-        scope: Self::Scope<'_>,
-        e: web_sys::Event,
-        target_path: Vec<u32>,
-    ) -> Result<(), JsValue>;
-    fn update(
-        &mut self,
-        parent: &Element,
-        state: &Self::State,
-        scope: Self::Scope<'_>,
-        flags: u64,
-    ) -> Result<(), JsValue>;
-    fn unmount(&self);
-}
-
 /// Each route maps a path pattern to a component constructor
 /*pub struct Route {
     pattern: &'static str,
@@ -190,38 +96,41 @@ pub fn match_pattern(
 trait ComponentState {
     type Props; // ex. (n, word), should be owned
 
-    fn new(props: Self::Props) -> Self;
+    fn new(props: Self::Props) -> Rc<RefCell<Self>>;
     fn init(&mut self);
     fn update_derived(&mut self);
 }
 
 trait ComponentStateExt: ComponentState {
-    fn startup(props: Self::Props) -> Self;
+    fn startup(props: Self::Props) -> Rc<RefCell<Self>>;
 }
 
 impl<T: ComponentState> ComponentStateExt for T {
-    fn startup(props: Self::Props) -> Self {
-        let mut state = Self::new(props);
-        state.init();
-        state.update_derived();
+    fn startup(props: Self::Props) -> Rc<RefCell<Self>> {
+        let state = Self::new(props);
+        {
+            let mut state_borrowed = state.borrow_mut();
+            state_borrowed.init();
+            state_borrowed.update_derived();
+        }
         state
     }
 }
 
 struct Component<T: GenericFragment> {
     contents: T,
-    state: T::State,
+    state: Rc<RefCell<T::State>>,
     parent: Option<Element>, // This is needed for updates, but is only set during mount, so it's an Option
 }
 
-impl<'a, T: GenericFragment<Scope<'a> = ()>> Component<T>
+impl<'a, T: GenericFragment<Scope = ()>> Component<T>
 where
     T::State: ComponentState,
 {
-    fn new(state: T::State, current_path: &Vec<u32>) -> Result<Self, JsValue> {
+    fn new(state: Rc<RefCell<T::State>>, current_path: &Vec<u32>) -> Result<Self, JsValue> {
         web_sys::console::log_1(&"Initializing Page component".into());
 
-        let contents = T::new(&state, (), current_path)?;
+        let contents = T::new(state.clone(), (), current_path)?;
         let new_page = Self {
             contents,
             state,
@@ -231,7 +140,7 @@ where
         Ok(new_page)
     }
 
-    fn mount(&mut self, parent: &'a Element, add_method: impl AddMethod) -> Result<(), JsValue> {
+    fn mount(&mut self, parent: &'a Element, add_method: &dyn AddMethod) -> Result<(), JsValue> {
         self.parent = Some(parent.clone());
         self.contents.mount(parent, add_method)
     }
@@ -259,7 +168,7 @@ where
             .into(),
         );
         // Event handling
-        self.contents.proc(&mut self.state, (), e, target_path)?;
+        self.contents.proc(self.state.clone(), (), e, target_path)?;
 
         self.apply()?;
 
@@ -268,16 +177,14 @@ where
 
     /// Apply changes to the DOM based on the current state and dirty flags
     fn apply(&mut self) -> Result<(), JsValue> {
-        let state = &mut self.state;
-
         // update derived
-        state.update_derived();
+        self.state.borrow_mut().update_derived();
 
         // generate patches based on dirty flags
         let flag_snapshot = DIRTY_FLAGS.load(SeqCst);
 
         self.contents
-            .update(self.parent.as_ref().unwrap(), state, (), flag_snapshot)?;
+            .update(self.parent.as_ref().unwrap(), self.state.clone(), (), flag_snapshot)?;
 
         // Restore snapshot
         DIRTY_FLAGS.store(flag_snapshot, SeqCst);
@@ -293,31 +200,129 @@ where
 
 trait GenericFragment {
     type State;
-    type Scope<'a>: Copy; // this can implement Copy 'cause it's all references
+    type Scope: Clone; // this can implement Clone 'cause it's all Rc's
 
     fn new(
-        state: &Self::State,
-        scope: Self::Scope<'_>,
+        state: Rc<RefCell<Self::State>>,
+        scope: Self::Scope,
         current_path: &Vec<u32>,
     ) -> Result<Self, JsValue>
     where
         Self: Sized;
-    fn mount(&mut self, parent: &Element, add_method: impl AddMethod) -> Result<(), JsValue>;
+    fn mount(&mut self, parent: &Element, add_method: &dyn AddMethod) -> Result<(), JsValue>;
     fn proc(
         &mut self,
-        state: &mut Self::State,
-        scope: Self::Scope<'_>,
+        state: Rc<RefCell<Self::State>>,
+        scope: Self::Scope,
         e: web_sys::Event,
         target_path: Vec<u32>,
     ) -> Result<(), JsValue>;
     fn update(
         &mut self,
         parent: &Element,
-        state: &Self::State,
-        scope: Self::Scope<'_>,
+        state: Rc<RefCell<Self::State>>,
+        scope: Self::Scope,
         flags: u64,
     ) -> Result<(), JsValue>;
     fn unmount(&self);
+}
+
+trait SnippetContentTrait {
+    type State;
+    type Scope: Clone;
+    type Args: Clone;
+
+    fn new(
+        state: Rc<RefCell<Self::State>>,
+        scope: (Self::Scope, Self::Args),
+        current_path: &Vec<u32>,
+    ) -> Result<Self, JsValue>
+    where
+        Self: Sized;
+
+    fn mount(&mut self, parent: &Element, add_method: &dyn AddMethod) -> Result<(), JsValue>;
+    fn proc(
+        &mut self,
+        state: Rc<RefCell<Self::State>>,
+        scope: (Self::Scope, Self::Args),
+        e: web_sys::Event,
+        target_path: Vec<u32>,
+    ) -> Result<(), JsValue>;
+    fn update(
+        &mut self,
+        parent: &Element,
+        state: Rc<RefCell<Self::State>>,
+        scope: (Self::Scope, Self::Args),
+        flags: u64,
+    ) -> Result<(), JsValue>;
+    fn unmount(&self);
+}
+
+trait SnippetFactoryTrait<Args> {
+    fn init(&mut self, args: Args) -> Result<(), JsValue>;
+    fn mount(&mut self, parent: &Element, add_method: &dyn AddMethod) -> Result<(), JsValue>;
+    fn proc(&mut self, args: Args, e: web_sys::Event, target_path: Vec<u32>) -> Result<(), JsValue>;
+    fn update(&mut self, parent: &Element, args: Args, flags: u64) -> Result<(), JsValue>;
+    fn unmount(&self);
+}
+
+struct SnippetFactory<T: SnippetContentTrait> {
+    state: Rc<RefCell<T::State>>,
+    scope: T::Scope, // nested Rc<RefCell>s
+    content: Option<T>,
+}
+
+impl<T: SnippetContentTrait> SnippetFactory<T> {
+    fn new(state: Rc<RefCell<T::State>>, scope: T::Scope, current_path: &Vec<u32>) -> Self {
+        SnippetFactory {
+            state: state.clone(),
+            scope: scope.clone(),
+            content: None,
+        }
+    }
+}
+
+//impl<T: IfContentTrait> GenericFragment for IfElement<T> {
+impl<T: SnippetContentTrait> SnippetFactoryTrait<T::Args> for SnippetFactory<T> {
+    fn init(&mut self, args: T::Args) -> Result<(), JsValue> {
+        self.content = Some(T::new(self.state.clone(), (self.scope.clone(), args), &vec![])?);
+
+        Ok(())
+    }
+
+    /// ONLY CALL AFTER INIT
+    fn mount(&mut self, parent: &Element, add_method: &dyn AddMethod) -> Result<(), JsValue> {
+        let content = self.content.as_mut().unwrap();
+
+        content.mount(parent, add_method)?;
+
+        Ok(())
+    }
+
+    /// ONLY CALL AFTER INIT
+    fn proc(&mut self, args: T::Args, e: web_sys::Event, target_path: Vec<u32>) -> Result<(), JsValue> {
+        let content = self.content.as_mut().unwrap();
+
+        content.proc(self.state.clone(), (self.scope.clone(), args), e, target_path)?;
+
+        Ok(())
+    }
+
+    /// ONLY CALL AFTER INIT
+    fn update(&mut self, parent: &Element, args: T::Args, flags: u64) -> Result<(), JsValue> {
+        let content = self.content.as_mut().unwrap();
+
+        content.update(parent, self.state.clone(), (self.scope.clone(), args), flags)?;
+
+        Ok(())
+    }
+
+    /// ONLY CALL AFTER INIT
+    fn unmount(&self) {
+        let content = self.content.as_ref().unwrap();
+
+        content.unmount();
+    }
 }
 
 struct IfElement<T: IfContentTrait> {
@@ -328,30 +333,30 @@ struct IfElement<T: IfContentTrait> {
 
 trait IfContentTrait {
     type State;
-    type Scope<'a>: Copy; // this can implement Copy 'cause it's all references
+    type Scope: Clone; // this can implement Copy 'cause it's all references
 
     // State, Scope (internal references in nested tuples)
-    fn branch_changed(&self, state: &Self::State, _scope: Self::Scope<'_>, flags: u64) -> bool;
+    fn branch_changed(&self, state: Rc<RefCell<Self::State>>, _scope: Self::Scope, flags: u64) -> bool;
     fn new(
-        state: &Self::State,
-        scope: Self::Scope<'_>,
+        state: Rc<RefCell<Self::State>>,
+        scope: Self::Scope,
         current_path: &Vec<u32>,
     ) -> Result<Self, JsValue>
     where
         Self: Sized;
-    fn mount(&mut self, parent: &Element, add_method: impl AddMethod) -> Result<(), JsValue>;
+    fn mount(&mut self, parent: &Element, add_method: &dyn AddMethod) -> Result<(), JsValue>;
     fn proc(
         &mut self,
-        state: &mut Self::State,
-        scope: Self::Scope<'_>,
+        state: Rc<RefCell<Self::State>>,
+        scope: Self::Scope,
         e: web_sys::Event,
         target_path: Vec<u32>,
     ) -> Result<(), JsValue>;
     fn update(
         &mut self,
         parent: &Element,
-        state: &Self::State,
-        scope: Self::Scope<'_>,
+        state: Rc<RefCell<Self::State>>,
+        scope: Self::Scope,
         flags: u64,
     ) -> Result<(), JsValue>;
     fn unmount(&self);
@@ -359,11 +364,11 @@ trait IfContentTrait {
 
 impl<T: IfContentTrait> GenericFragment for IfElement<T> {
     type State = T::State;
-    type Scope<'a> = T::Scope<'a>;
+    type Scope = T::Scope;
 
     fn new(
-        state: &Self::State,
-        scope: Self::Scope<'_>,
+        state: Rc<RefCell<Self::State>>,
+        scope: Self::Scope,
         current_path: &Vec<u32>,
     ) -> Result<Self, JsValue> {
         let window = web_sys::window().expect("no global window exists");
@@ -376,16 +381,16 @@ impl<T: IfContentTrait> GenericFragment for IfElement<T> {
         })
     }
 
-    fn mount(&mut self, parent: &Element, add_method: impl AddMethod) -> Result<(), JsValue> {
+    fn mount(&mut self, parent: &Element, add_method: &dyn AddMethod) -> Result<(), JsValue> {
         add_method(&self.comment)?;
         self.content_enum
-            .mount(parent, comment_insert_closure(&self.comment, parent))
+            .mount(parent, &comment_insert_closure(&self.comment, parent))
     }
 
     fn proc(
         &mut self,
-        state: &mut Self::State,
-        scope: Self::Scope<'_>,
+        state: Rc<RefCell<Self::State>>,
+        scope: Self::Scope,
         e: web_sys::Event,
         target_path: Vec<u32>,
     ) -> Result<(), JsValue> {
@@ -395,18 +400,18 @@ impl<T: IfContentTrait> GenericFragment for IfElement<T> {
     fn update(
         &mut self,
         parent: &Element,
-        state: &Self::State,
-        scope: Self::Scope<'_>,
+        state: Rc<RefCell<Self::State>>,
+        scope: Self::Scope,
         flags: u64,
     ) -> Result<(), JsValue> {
-        if self.content_enum.branch_changed(state, scope, flags) {
+        if self.content_enum.branch_changed(state.clone(), scope.clone(), flags) {
             // Unmount old content
             self.content_enum.unmount();
 
             // Mount new content
-            self.content_enum = T::new(state, scope, &self.current_path)?;
+            self.content_enum = T::new(state.clone(), scope.clone(), &self.current_path)?;
             self.content_enum
-                .mount(parent, comment_insert_closure(&self.comment, parent))?;
+                .mount(parent, &comment_insert_closure(&self.comment, parent))?;
         }
         self.content_enum.update(parent, state, scope, flags)
     }
@@ -421,40 +426,40 @@ impl<T: IfContentTrait> GenericFragment for IfElement<T> {
 /// Each instance is identified by a unique key produced by a hash function
 struct EachElement<T: EachContentTrait> {
     pub comment: web_sys::Comment,
-    pub content: Vec<(u64, T, T::Item)>, // (hash, DOM ref, item)
+    pub content: Vec<(u64, T, Rc<T::Item>)>, // (hash, DOM ref, item)
     current_path: Vec<u32>,
 }
 
 /// Functions which the fragment inside an each block must implement to be used as content for an EachElement
 trait EachContentTrait {
     type State;
-    type Scope<'a>: Copy; // this can implement Copy 'cause it's all references
+    type Scope: Clone; // this can implement Clone 'cause it's all references
 
     // State, Scope (internal references in nested tuples)
     type Item: std::hash::Hash;
 
-    fn generate(state: &Self::State, scope: Self::Scope<'_>, flags: u64)
+    fn generate(state: Rc<RefCell<Self::State>>, scope: Self::Scope, flags: u64)
         -> Option<Vec<Self::Item>>;
     fn new(
-        state: &Self::State,
-        scope: (Self::Scope<'_>, &Self::Item),
+        state: Rc<RefCell<Self::State>>,
+        scope: (Self::Scope, Rc<Self::Item>),
         current_path: &Vec<u32>,
     ) -> Result<Self, JsValue>
     where
         Self: Sized;
-    fn mount(&mut self, parent: &Element, add_method: impl AddMethod) -> Result<(), JsValue>;
+    fn mount(&mut self, parent: &Element, add_method: &dyn AddMethod) -> Result<(), JsValue>;
     fn proc(
         &mut self,
-        state: &mut Self::State,
-        scope: (Self::Scope<'_>, &Self::Item),
+        state: Rc<RefCell<Self::State>>,
+        scope: (Self::Scope, &Self::Item),
         e: web_sys::Event,
         target_path: Vec<u32>,
     ) -> Result<(), JsValue>;
     fn update(
         &mut self,
         parent: &Element,
-        state: &Self::State,
-        scope: (Self::Scope<'_>, &Self::Item),
+        state: Rc<RefCell<Self::State>>,
+        scope: (Self::Scope, Rc<Self::Item>),
         flags: u64,
     ) -> Result<(), JsValue>;
     fn unmount(&self);
@@ -462,11 +467,11 @@ trait EachContentTrait {
 
 impl<T: EachContentTrait> GenericFragment for EachElement<T> {
     type State = T::State;
-    type Scope<'a> = T::Scope<'a>;
+    type Scope = T::Scope;
 
     fn new(
-        state: &Self::State,
-        scope: Self::Scope<'_>,
+        state: Rc<RefCell<Self::State>>,
+        scope: Self::Scope,
         current_path: &Vec<u32>,
     ) -> Result<Self, JsValue> {
         let window = web_sys::window().expect("no global window exists");
@@ -474,21 +479,22 @@ impl<T: EachContentTrait> GenericFragment for EachElement<T> {
 
         Ok(Self {
             comment: document.create_comment(""),
-            content: T::generate(state, scope, u64::MAX)
+            content: T::generate(state.clone(), scope.clone(), u64::MAX)
                 .unwrap()
                 .into_iter()
                 .map(|item| {
                     let hash = hash_item(&item);
-                    let content = T::new(state, (scope, &item), current_path)
+                    let item_rc = Rc::new(item);
+                    let content = T::new(state.clone(), (scope.clone(), item_rc.clone()), current_path)
                         .expect("Failed to create content");
-                    (hash, content, item)
+                    (hash, content, item_rc)
                 })
                 .collect(),
             current_path: current_path.clone(),
         })
     }
 
-    fn mount(&mut self, parent: &Element, add_method: impl AddMethod) -> Result<(), JsValue> {
+    fn mount(&mut self, parent: &Element, add_method: &dyn AddMethod) -> Result<(), JsValue> {
         add_method(&self.comment)?;
         for (_, content, _) in &mut self.content {
             content.mount(parent, &comment_insert_closure(&self.comment, parent))?;
@@ -498,13 +504,13 @@ impl<T: EachContentTrait> GenericFragment for EachElement<T> {
 
     fn proc(
         &mut self,
-        state: &mut Self::State,
-        scope: Self::Scope<'_>,
+        state: Rc<RefCell<Self::State>>,
+        scope: Self::Scope,
         e: web_sys::Event,
         target_path: Vec<u32>,
     ) -> Result<(), JsValue> {
         for (_, content, item) in &mut self.content {
-            content.proc(state, (scope, item), e.clone(), target_path.clone())?;
+            content.proc(state.clone(), (scope.clone(), item), e.clone(), target_path.clone())?;
         }
         Ok(())
     }
@@ -512,12 +518,12 @@ impl<T: EachContentTrait> GenericFragment for EachElement<T> {
     fn update(
         &mut self,
         parent: &Element,
-        state: &Self::State,
-        scope: Self::Scope<'_>,
+        state: Rc<RefCell<Self::State>>,
+        scope: Self::Scope,
         flags: u64,
     ) -> Result<(), JsValue> {
         // Diff & update each list if necessary
-        if let Some(new_items) = T::generate(state, scope, flags) {
+        if let Some(new_items) = T::generate(state.clone(), scope.clone(), flags) {
             let new_hashes: Vec<u64> = new_items.iter().map(|item| hash_item(item)).collect();
             let mut takeable_new_items: Vec<Option<T::Item>> =
                 new_items.into_iter().map(Some).collect();
@@ -582,7 +588,7 @@ impl<T: EachContentTrait> GenericFragment for EachElement<T> {
                 .max_by_key(|sub| sub.len())
                 .unwrap_or_default();
 
-            let mut takeable_old_items: Vec<Option<(u64, T, T::Item)>> =
+            let mut takeable_old_items: Vec<Option<(u64, T, Rc<T::Item>)>> =
                 self.content.drain(..).map(Some).collect();
 
             // Move & mount items into new list
@@ -595,7 +601,7 @@ impl<T: EachContentTrait> GenericFragment for EachElement<T> {
                         old_item.1.unmount();
                         old_item
                             .1
-                            .mount(parent, comment_insert_closure(&self.comment, parent))?;
+                            .mount(parent, &comment_insert_closure(&self.comment, parent))?;
                         new_list.push(old_item);
                     } else {
                         // Item is already in correct position, just update anchor for next iteration
@@ -604,9 +610,9 @@ impl<T: EachContentTrait> GenericFragment for EachElement<T> {
                     }
                 } else {
                     // Mount new item
-                    let new_item = takeable_new_items[new_index].take().unwrap();
-                    let mut new_contents = T::new(state, (scope, &new_item), &self.current_path)?;
-                    new_contents.mount(parent, comment_insert_closure(&self.comment, parent))?;
+                    let new_item = Rc::new(takeable_new_items[new_index].take().unwrap());
+                    let mut new_contents = T::new(state.clone(), (scope.clone(), new_item.clone()), &self.current_path)?;
+                    new_contents.mount(parent, &comment_insert_closure(&self.comment, parent))?;
                     new_list.push((new_hashes[new_index], new_contents, new_item));
                 }
             }
@@ -615,7 +621,7 @@ impl<T: EachContentTrait> GenericFragment for EachElement<T> {
 
         // Update all items (including moved ones) with new scope and flags
         for (_, content, item) in &mut self.content {
-            content.update(parent, state, (scope, item), flags)?;
+            content.update(parent, state.clone(), (scope.clone(), item.clone()), flags)?;
         }
 
         Ok(())
@@ -690,7 +696,7 @@ pub fn mount() -> Result<(), JsValue> {
 
         let state = <RootFrag as GenericFragment>::State::startup(());
         let mut new_page = Component::<RootFrag>::new(state, &vec![])?;
-        new_page.mount(&body, child_append_closure(&body))?;
+        new_page.mount(&body, &child_append_closure(&body))?;
         *page.borrow_mut() = Some(new_page);
         web_sys::console::log_1(&"Page component mounted".into());
         Ok(())
@@ -709,4 +715,10 @@ pub fn handle_event(e: web_sys::Event, target: Vec<u32>) {
             })
             .ok();
     });
+}
+
+fn scope_example(scope: (((), Rc<RefCell<u32>>), Rc<RefCell<String>>)) -> () {
+    let (((), _counter), _text) = scope;
+    let _counter_ref = _counter.borrow();
+    let _text_ref = _text.borrow();
 }

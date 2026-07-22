@@ -1,14 +1,16 @@
 use crate::*;
 
-pub struct PageState {}
+pub struct State {}
 
-impl ComponentState for PageState {
+impl ComponentState for State {
     type Props = ();
 
     fn init(&mut self) {}
 
-    fn new(props: Self::Props) -> Self {
-        PageState {}
+    fn new(props: Self::Props) -> Rc<RefCell<Self>> {
+        Rc::new_cyclic(|weak_state| {
+            RefCell::new(State {})
+        })
     }
 
     fn update_derived(&mut self) {}

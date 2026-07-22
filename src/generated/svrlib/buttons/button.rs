@@ -46,12 +46,14 @@ impl ComponentState for State {
         // Initialize any state if needed
     }
 
-    fn new(props: Self::Props) -> Self {
-        State {
-            text: props.0,
-            func_call: 0,
-            button_counter: MutateTracker::new(0, 0),
-        }
+    fn new(props: Self::Props) -> Rc<RefCell<Self>> {
+        Rc::new_cyclic(|weak_state| {
+            RefCell::new(State {
+                text: props.0,
+                func_call: 0,
+                button_counter: MutateTracker::new(0, 0),
+            })
+        })
     }
 
     fn update_derived(&mut self) {
@@ -67,14 +69,15 @@ pub struct RootFrag {
 
 impl GenericFragment for RootFrag {
     type State = State;
-    type Scope<'a> = ();
+    type Scope = ();
 
-    fn new(state: &Self::State, scope: (), current_path: &Vec<u32>) -> Result<Self, JsValue>
+    fn new(state: Rc<RefCell<Self::State>>, scope: (), current_path: &Vec<u32>) -> Result<Self, JsValue>
     where
         Self: Sized,
     {
         let window = web_sys::window().expect("no global window exists");
         let document = window.document().expect("no document on window");
+        let state = state.borrow();
 
         let a = document.create_element("div")?;
         let b = document.create_element("button")?;
@@ -88,7 +91,7 @@ impl GenericFragment for RootFrag {
         Ok(Self { a, b, c })
     }
 
-    fn mount(&mut self, parent: &Element, add_method: impl AddMethod) -> Result<(), JsValue> {
+    fn mount(&mut self, parent: &Element, add_method: &dyn AddMethod) -> Result<(), JsValue> {
         add_method(&self.a)?;
         self.a.append_child(&self.b)?;
         self.a.append_child(&self.c)?;
@@ -98,7 +101,7 @@ impl GenericFragment for RootFrag {
 
     fn proc(
         &mut self,
-        state: &mut Self::State,
+        state: Rc<RefCell<Self::State>>,
         scope: (),
         e: web_sys::Event,
         mut target_path: Vec<u32>,
@@ -106,9 +109,11 @@ impl GenericFragment for RootFrag {
         let target = target_path.pop().unwrap();
         match e.type_().as_str() {
             "click" if target == 1 => {
+                let mut state = state.borrow_mut();
                 *state.button_counter += 1;
             }
             "click" if target == 2 => {
+                let mut state = state.borrow_mut();
                 state.func_call = *state.button_counter;
                 DIRTY_FLAGS.fetch_or(1 << 1, SeqCst); // mark func_call prop as dirty to propagate to parent
             }
@@ -121,10 +126,11 @@ impl GenericFragment for RootFrag {
     fn update(
         &mut self,
         parent: &Element,
-        state: &Self::State,
+        state: Rc<RefCell<Self::State>>,
         scope: (),
         flags: u64,
     ) -> Result<(), JsValue> {
+        let state = state.borrow();
         if flags & 1 << 0 != 0 {
             self.b
                 .set_inner_html(&format!("{}: {}", state.text, *state.button_counter));

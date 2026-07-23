@@ -1,0 +1,19 @@
+<div>
+  <h1>Scoped Snippets</h1>
+  {#snippet non_scoped(i)}
+    <p>Non-scoped {i}</p>
+  {/snippet}
+
+  {#each (0..5) as i}
+    {#snippet first_scope()}
+      {@render non_scoped(i)}
+      <p>First scope</p>
+
+      {#snippet second_scope()}
+        <p>Second scope {i}</p>
+      {/snippet}
+
+      {@render second_scope()}
+    {/snippet}
+  {/each}
+</div>

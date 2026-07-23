@@ -1,6 +1,7 @@
 // converted from `use $components::buttons::Button;`
 use crate::generated::svrlib::buttons::button;
 
+use crate::generated::svrlib::snippet_switcher;
 use crate::*;
 
 // User generated agnostic code
@@ -85,6 +86,7 @@ pub struct RootFrag {
     h: Element,
     i: Element,
     j: Component<button::RootFrag>,
+    k: Component<snippet_switcher::RootFrag>,
 }
 
 impl GenericFragment for RootFrag {
@@ -120,6 +122,9 @@ impl GenericFragment for RootFrag {
         ));
         el4.set_inner_html(&format!("Struct B: {}", state.my_struct.b));
 
+        let mut k_state = <snippet_switcher::RootFrag as GenericFragment>::State::startup(());
+        let k = Component::<snippet_switcher::RootFrag>::new(k_state, &prepend_path(current_path, 7))?;
+
         // target paths are static and unique to each fragment
         // listeners are in new() to preserve them if moved (unmounted & remounted)
         add_listener(&el1, "click", prepend_path(current_path, 1))?;
@@ -136,6 +141,7 @@ impl GenericFragment for RootFrag {
             h: el7,
             i: el8,
             j: el9,
+            k,
         })
     }
 
@@ -150,6 +156,7 @@ impl GenericFragment for RootFrag {
         self.g.mount(&self.a, &child_append_closure(&self.a))?;
         self.a.append_child(&self.h)?;
         self.h.append_child(&self.i)?;
+        self.k.mount(&self.a, &child_append_closure(&self.a))?;
         Ok(())
     }
 
@@ -201,6 +208,9 @@ impl GenericFragment for RootFrag {
             _ if target == 6 => {
                 // Example of an #each block nested handler
                 self.g.proc(state, scope, e, target_path)?;
+            }
+            _ if target == 7 => {
+                self.k.proc(scope, e, target_path)?;
             }
             _ => {}
         }

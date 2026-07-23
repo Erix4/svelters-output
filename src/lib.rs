@@ -3,7 +3,7 @@
 use std::{
     cell::RefCell,
     ops::{Deref, DerefMut},
-    rc::Rc,
+    rc::{Rc, Weak},
     sync::atomic::{AtomicU64, Ordering::SeqCst},
     vec,
 };
@@ -183,8 +183,12 @@ where
         // generate patches based on dirty flags
         let flag_snapshot = DIRTY_FLAGS.load(SeqCst);
 
-        self.contents
-            .update(self.parent.as_ref().unwrap(), self.state.clone(), (), flag_snapshot)?;
+        self.contents.update(
+            self.parent.as_ref().unwrap(),
+            self.state.clone(),
+            (),
+            flag_snapshot,
+        )?;
 
         // Restore snapshot
         DIRTY_FLAGS.store(flag_snapshot, SeqCst);
@@ -200,7 +204,23 @@ where
 
 trait GenericFragment {
     type State;
-    type Scope: Clone; // this can implement Clone 'cause it's all Rc's
+
+    /// Scope is a nested tuple of items which are only accessible within
+    /// the current branch of the fragment tree (moving down the tree adds
+    /// more layers to the tuple, without the outmost layer being exclusive
+    /// to the fragment branch).
+    /// 
+    /// Scope items are always wrapped in Rc<RefCell>s, and are created in
+    /// two ways: via #each blocks, #snippet elements, and #snippet scopes. 
+    /// 
+    /// #each blocks create scope items when new items are added. These items
+    /// never change: if the #each block's iterator changes, old items are
+    /// unmounted (and their scope items destroyed) and new items are added
+    /// (adding new scope items for that item's children).
+    /// 
+    /// #snippet elements create scope items whenever a changes is made to its
+    /// arguments. These elements _can_ change.
+    type Scope: Clone;
 
     fn new(
         state: Rc<RefCell<Self::State>>,
@@ -225,6 +245,147 @@ trait GenericFragment {
         flags: u64,
     ) -> Result<(), JsValue>;
     fn unmount(&self);
+}
+
+/// A snippet scope is a branch in the fragment tree where snippets can
+/// be accessed. This struct is responsible for creating the snippet
+/// factory (which captures the state and scope), and building that
+/// factory into the scope so it can be used into the branch's children.
+/// 
+/// When update is called on the scope (meaning state or scope may have
+/// changed), the update flags are stored in the factory so references to
+/// the factory in other components can use them to evaluate changes within
+/// the snippets.
+struct SnippetScope<
+    FC: SnippetContentTrait,
+    T: GenericFragment<Scope = (FC::Scope, Rc<SnippetFactory<FC>>), State = FC::State>,
+> {
+    pub content: T,
+    pub factory: Rc<SnippetFactory<FC>>,
+}
+
+impl<
+        FC: SnippetContentTrait,
+        T: GenericFragment<Scope = (FC::Scope, Rc<SnippetFactory<FC>>), State = FC::State>,
+    > GenericFragment for SnippetScope<FC, T>
+{
+    type Scope = FC::Scope;
+    type State = FC::State;
+
+    fn new(
+        state: Rc<RefCell<Self::State>>,
+        scope: Self::Scope,
+        current_path: &Vec<u32>,
+    ) -> Result<Self, JsValue>
+    where
+        Self: Sized,
+    {
+        let factory = Rc::new(SnippetFactory::<FC>::new(
+            Rc::downgrade(&state),
+            scope.clone(),
+            current_path,
+        ));
+        let content = T::new(state, (scope, factory.clone()), current_path)?;
+
+        Ok(SnippetScope { content, factory })
+    }
+
+    fn mount(&mut self, parent: &Element, add_method: &dyn AddMethod) -> Result<(), JsValue> {
+        self.content.mount(parent, add_method)?;
+
+        Ok(())
+    }
+
+    fn proc(
+        &mut self,
+        state: Rc<RefCell<Self::State>>,
+        scope: Self::Scope,
+        e: web_sys::Event,
+        target_path: Vec<u32>,
+    ) -> Result<(), JsValue>
+    {
+        self.content.proc(state, (scope, self.factory.clone()), e, target_path)?;
+
+        Ok(())
+    }
+
+    fn update(
+        &mut self,
+        parent: &Element,
+        state: Rc<RefCell<Self::State>>,
+        scope: Self::Scope,
+        flags: u64,
+    ) -> Result<(), JsValue>
+    {
+        self.content.update(parent, state, (scope, self.factory.clone()), flags)?;
+
+        Ok(())
+    }
+
+    fn unmount(&self) {
+        self.content.unmount();
+    }
+}
+
+struct SnippetElement<T: SnippetContentTrait> {
+    pub content: T,
+    factory: SnippetFactory<T>,
+    pub comment: web_sys::Comment,
+    args: Rc<T::Args>,
+    target_path: Vec<u32>,
+}
+
+trait SnippetElementTrait<Args> {
+    fn mount(&mut self, parent: &Element, add_method: &dyn AddMethod) -> Result<(), JsValue>;
+    fn proc(&mut self, e: web_sys::Event, target_path: Vec<u32>) -> Result<(), JsValue>;
+    fn update(&mut self, parent: &Element, args: Args, flags: u64) -> Result<(), JsValue>;
+    fn unmount(&self);
+
+    fn extract_for_swap(&self) -> (Rc<Args>, Vec<u32>, web_sys::Comment);
+}
+
+impl<T: SnippetContentTrait> SnippetElementTrait<T::Args> for SnippetElement<T> {
+    fn mount(&mut self, parent: &Element, add_method: &dyn AddMethod) -> Result<(), JsValue> {
+        add_method(&self.comment)?;
+        self.content
+            .mount(parent, &comment_insert_closure(&self.comment, parent))?;
+
+        Ok(())
+    }
+
+    fn proc(&mut self, e: web_sys::Event, target_path: Vec<u32>) -> Result<(), JsValue> {
+        self.content.proc(
+            self.factory.state.upgrade().unwrap(),
+            (self.factory.scope.clone(), self.args.clone()),
+            e,
+            target_path,
+        )
+    }
+
+    fn update(&mut self, parent: &Element, args: T::Args, flags: u64) -> Result<(), JsValue> {
+        let args = Rc::new(args);
+        self.content.update(
+            parent,
+            self.factory.state.upgrade().unwrap(),
+            (self.factory.scope.clone(), args.clone()),
+            flags,
+        );
+        self.args = args;
+
+        Ok(())
+    }
+
+    fn unmount(&self) {
+        self.content.unmount();
+    }
+
+    fn extract_for_swap(&self) -> (Rc<T::Args>, Vec<u32>, web_sys::Comment) {
+        (
+            self.args.clone(),
+            self.target_path.clone(),
+            self.comment.clone(),
+        )
+    }
 }
 
 trait SnippetContentTrait {
@@ -234,7 +395,7 @@ trait SnippetContentTrait {
 
     fn new(
         state: Rc<RefCell<Self::State>>,
-        scope: (Self::Scope, Self::Args),
+        scope: (Self::Scope, Rc<Self::Args>),
         current_path: &Vec<u32>,
     ) -> Result<Self, JsValue>
     where
@@ -244,7 +405,7 @@ trait SnippetContentTrait {
     fn proc(
         &mut self,
         state: Rc<RefCell<Self::State>>,
-        scope: (Self::Scope, Self::Args),
+        scope: (Self::Scope, Rc<Self::Args>),
         e: web_sys::Event,
         target_path: Vec<u32>,
     ) -> Result<(), JsValue>;
@@ -252,76 +413,117 @@ trait SnippetContentTrait {
         &mut self,
         parent: &Element,
         state: Rc<RefCell<Self::State>>,
-        scope: (Self::Scope, Self::Args),
+        scope: (Self::Scope, Rc<Self::Args>),
         flags: u64,
     ) -> Result<(), JsValue>;
     fn unmount(&self);
 }
 
-trait SnippetFactoryTrait<Args> {
-    fn init(&mut self, args: Args) -> Result<(), JsValue>;
-    fn mount(&mut self, parent: &Element, add_method: &dyn AddMethod) -> Result<(), JsValue>;
-    fn proc(&mut self, args: Args, e: web_sys::Event, target_path: Vec<u32>) -> Result<(), JsValue>;
-    fn update(&mut self, parent: &Element, args: Args, flags: u64) -> Result<(), JsValue>;
-    fn unmount(&self);
-}
-
+/// A snippet factory stores a weak reference to the state and scope
+/// a snippet was defined in, and contains in its type the struct which
+/// defines the content and behavior of the snippet. The references to
+/// State is weak so that factories themselves can be stored in state
+/// without causing memory leaks due to ownership cycles.
+/// 
+/// Snippet factories can be cloned and passed around to different
+/// components and used to create snippets. Snippets created from a
+/// factory store a clone of that factory inside them, and when the
+/// state or scope of the stored factory changes (as indicated by
+/// update_flags), the snippet will update itself.
 struct SnippetFactory<T: SnippetContentTrait> {
-    state: Rc<RefCell<T::State>>,
+    state: Weak<RefCell<T::State>>,
     scope: T::Scope, // nested Rc<RefCell>s
-    content: Option<T>,
+    update_flags: Rc<RefCell<u64>>,
 }
 
-impl<T: SnippetContentTrait> SnippetFactory<T> {
-    fn new(state: Rc<RefCell<T::State>>, scope: T::Scope, current_path: &Vec<u32>) -> Self {
+impl<T: SnippetContentTrait> Clone for SnippetFactory<T>
+where
+    T::Scope: Clone,
+{
+    fn clone(&self) -> Self {
         SnippetFactory {
-            state: state.clone(),
-            scope: scope.clone(),
-            content: None,
+            state: self.state.clone(), // Weak can always be cloned
+            scope: self.scope.clone(), // T::Scope implements Clone
+            update_flags: self.update_flags.clone(),
         }
     }
 }
 
-//impl<T: IfContentTrait> GenericFragment for IfElement<T> {
-impl<T: SnippetContentTrait> SnippetFactoryTrait<T::Args> for SnippetFactory<T> {
-    fn init(&mut self, args: T::Args) -> Result<(), JsValue> {
-        self.content = Some(T::new(self.state.clone(), (self.scope.clone(), args), &vec![])?);
+trait SnippetFactoryTrait<Args> {
+    fn init(
+        &self,
+        args: Rc<Args>,
+        current_path: &Vec<u32>,
+    ) -> Result<Box<dyn SnippetElementTrait<Args>>, JsValue>;
 
-        Ok(())
+    fn init_swap(
+        &self,
+        parent: &Element,
+        old_element: &Box<dyn SnippetElementTrait<Args>>,
+    ) -> Result<Box<dyn SnippetElementTrait<Args>>, JsValue>;
+
+    fn update(&mut self, flags: u64);
+}
+
+impl<T: SnippetContentTrait> SnippetFactory<T> {
+    fn new(state: Weak<RefCell<T::State>>, scope: T::Scope, current_path: &Vec<u32>) -> Self {
+        SnippetFactory {
+            state: state.clone(),
+            scope: scope.clone(),
+            update_flags: Rc::new(RefCell::new(0)),
+        }
+    }
+}
+
+impl<T: SnippetContentTrait + 'static> SnippetFactoryTrait<T::Args> for SnippetFactory<T> {
+    fn init(
+        &self,
+        args: Rc<T::Args>,
+        current_path: &Vec<u32>,
+    ) -> Result<Box<dyn SnippetElementTrait<T::Args>>, JsValue> {
+        let window = web_sys::window().expect("no global window exists");
+        let document = window.document().expect("no document on window exists");
+
+        let factory: SnippetFactory<T> = self.clone();
+        Ok(Box::new(SnippetElement {
+            content: T::new(
+                self.state.upgrade().unwrap(),
+                (self.scope.clone(), args.clone()),
+                current_path,
+            )?,
+            comment: document.create_comment(""),
+            factory,
+            args,
+            target_path: current_path.clone(),
+        }))
     }
 
-    /// ONLY CALL AFTER INIT
-    fn mount(&mut self, parent: &Element, add_method: &dyn AddMethod) -> Result<(), JsValue> {
-        let content = self.content.as_mut().unwrap();
-
-        content.mount(parent, add_method)?;
-
-        Ok(())
+    fn init_swap(
+        &self,
+        parent: &Element,
+        old_element: &Box<dyn SnippetElementTrait<T::Args>>,
+    ) -> Result<Box<dyn SnippetElementTrait<T::Args>>, JsValue> {
+        let factory: SnippetFactory<T> = self.clone();
+        old_element.unmount();
+        let (args, current_path, comment) = old_element.extract_for_swap();
+        let mut new_content = T::new(
+            self.state.upgrade().unwrap(),
+            (self.scope.clone(), args.clone()),
+            &current_path,
+        )?;
+        new_content.mount(parent, &comment_insert_closure(&comment, parent))?;
+        Ok(Box::new(SnippetElement {
+            content: new_content,
+            comment,
+            factory,
+            args,
+            target_path: current_path.clone(),
+        }))
     }
 
-    /// ONLY CALL AFTER INIT
-    fn proc(&mut self, args: T::Args, e: web_sys::Event, target_path: Vec<u32>) -> Result<(), JsValue> {
-        let content = self.content.as_mut().unwrap();
-
-        content.proc(self.state.clone(), (self.scope.clone(), args), e, target_path)?;
-
-        Ok(())
-    }
-
-    /// ONLY CALL AFTER INIT
-    fn update(&mut self, parent: &Element, args: T::Args, flags: u64) -> Result<(), JsValue> {
-        let content = self.content.as_mut().unwrap();
-
-        content.update(parent, self.state.clone(), (self.scope.clone(), args), flags)?;
-
-        Ok(())
-    }
-
-    /// ONLY CALL AFTER INIT
-    fn unmount(&self) {
-        let content = self.content.as_ref().unwrap();
-
-        content.unmount();
+    /// Store changes to state so snippets using this factory know what to update
+    fn update(&mut self, flags: u64) {
+        self.update_flags = Rc::new(RefCell::new(flags));
     }
 }
 
@@ -336,7 +538,12 @@ trait IfContentTrait {
     type Scope: Clone; // this can implement Copy 'cause it's all references
 
     // State, Scope (internal references in nested tuples)
-    fn branch_changed(&self, state: Rc<RefCell<Self::State>>, _scope: Self::Scope, flags: u64) -> bool;
+    fn branch_changed(
+        &self,
+        state: Rc<RefCell<Self::State>>,
+        _scope: Self::Scope,
+        flags: u64,
+    ) -> bool;
     fn new(
         state: Rc<RefCell<Self::State>>,
         scope: Self::Scope,
@@ -404,7 +611,10 @@ impl<T: IfContentTrait> GenericFragment for IfElement<T> {
         scope: Self::Scope,
         flags: u64,
     ) -> Result<(), JsValue> {
-        if self.content_enum.branch_changed(state.clone(), scope.clone(), flags) {
+        if self
+            .content_enum
+            .branch_changed(state.clone(), scope.clone(), flags)
+        {
             // Unmount old content
             self.content_enum.unmount();
 
@@ -438,8 +648,11 @@ trait EachContentTrait {
     // State, Scope (internal references in nested tuples)
     type Item: std::hash::Hash;
 
-    fn generate(state: Rc<RefCell<Self::State>>, scope: Self::Scope, flags: u64)
-        -> Option<Vec<Self::Item>>;
+    fn generate(
+        state: Rc<RefCell<Self::State>>,
+        scope: Self::Scope,
+        flags: u64,
+    ) -> Option<Vec<Self::Item>>;
     fn new(
         state: Rc<RefCell<Self::State>>,
         scope: (Self::Scope, Rc<Self::Item>),
@@ -485,8 +698,12 @@ impl<T: EachContentTrait> GenericFragment for EachElement<T> {
                 .map(|item| {
                     let hash = hash_item(&item);
                     let item_rc = Rc::new(item);
-                    let content = T::new(state.clone(), (scope.clone(), item_rc.clone()), current_path)
-                        .expect("Failed to create content");
+                    let content = T::new(
+                        state.clone(),
+                        (scope.clone(), item_rc.clone()),
+                        current_path,
+                    )
+                    .expect("Failed to create content");
                     (hash, content, item_rc)
                 })
                 .collect(),
@@ -510,7 +727,12 @@ impl<T: EachContentTrait> GenericFragment for EachElement<T> {
         target_path: Vec<u32>,
     ) -> Result<(), JsValue> {
         for (_, content, item) in &mut self.content {
-            content.proc(state.clone(), (scope.clone(), item), e.clone(), target_path.clone())?;
+            content.proc(
+                state.clone(),
+                (scope.clone(), item),
+                e.clone(),
+                target_path.clone(),
+            )?;
         }
         Ok(())
     }
@@ -611,7 +833,11 @@ impl<T: EachContentTrait> GenericFragment for EachElement<T> {
                 } else {
                     // Mount new item
                     let new_item = Rc::new(takeable_new_items[new_index].take().unwrap());
-                    let mut new_contents = T::new(state.clone(), (scope.clone(), new_item.clone()), &self.current_path)?;
+                    let mut new_contents = T::new(
+                        state.clone(),
+                        (scope.clone(), new_item.clone()),
+                        &self.current_path,
+                    )?;
                     new_contents.mount(parent, &comment_insert_closure(&self.comment, parent))?;
                     new_list.push((new_hashes[new_index], new_contents, new_item));
                 }

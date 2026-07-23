@@ -202,6 +202,55 @@ where
     }
 }
 
+struct DynamicText<State, Scope> {
+    text: Text,
+    callback: Box<dyn Fn(Rc<RefCell<State>>, Scope) -> String>,
+    flag_mask: u64,
+}
+
+impl<State, Scope> DynamicText<State, Scope> {
+    fn new(
+        state: Rc<RefCell<State>>,
+        scope: Scope,
+        closure: Box<dyn Fn(Rc<RefCell<State>>, Scope) -> String>,
+        flag_mask: u64,
+    ) -> Self {
+        let text_str = closure(state, scope);
+
+        let window = web_sys::window().expect("no global window exists");
+        let document = window.document().expect("no document on window");
+
+        let text = document.create_text_node(&text_str);
+
+        DynamicText {
+            text,
+            callback: closure,
+            flag_mask,
+        }
+    }
+
+    fn mount(&mut self, add_method: &dyn AddMethod) -> Result<(), JsValue> {
+        add_method(&self.text)
+    }
+
+    fn update(
+        &mut self,
+        state: Rc<RefCell<State>>,
+        scope: Scope,
+        flags: u64,
+    ) -> Result<(), JsValue> {
+        if flags & self.flag_mask != 0 {
+            self.text.set_text_content(Some(&(self.callback)(state, scope)));
+        }
+
+        Ok(())
+    }
+
+    fn unmount(&self) {
+        self.text.remove();
+    }
+}
+
 trait GenericFragment {
     type State;
 
@@ -209,15 +258,15 @@ trait GenericFragment {
     /// the current branch of the fragment tree (moving down the tree adds
     /// more layers to the tuple, without the outmost layer being exclusive
     /// to the fragment branch).
-    /// 
+    ///
     /// Scope items are always wrapped in Rc<RefCell>s, and are created in
-    /// two ways: via #each blocks, #snippet elements, and #snippet scopes. 
-    /// 
+    /// two ways: via #each blocks, #snippet elements, and #snippet scopes.
+    ///
     /// #each blocks create scope items when new items are added. These items
     /// never change: if the #each block's iterator changes, old items are
     /// unmounted (and their scope items destroyed) and new items are added
     /// (adding new scope items for that item's children).
-    /// 
+    ///
     /// #snippet elements create scope items whenever a changes is made to its
     /// arguments. These elements _can_ change.
     type Scope: Clone;
@@ -251,7 +300,7 @@ trait GenericFragment {
 /// be accessed. This struct is responsible for creating the snippet
 /// factory (which captures the state and scope), and building that
 /// factory into the scope so it can be used into the branch's children.
-/// 
+///
 /// When update is called on the scope (meaning state or scope may have
 /// changed), the update flags are stored in the factory so references to
 /// the factory in other components can use them to evaluate changes within
@@ -302,9 +351,9 @@ impl<
         scope: Self::Scope,
         e: web_sys::Event,
         target_path: Vec<u32>,
-    ) -> Result<(), JsValue>
-    {
-        self.content.proc(state, (scope, self.factory.clone()), e, target_path)?;
+    ) -> Result<(), JsValue> {
+        self.content
+            .proc(state, (scope, self.factory.clone()), e, target_path)?;
 
         Ok(())
     }
@@ -315,9 +364,9 @@ impl<
         state: Rc<RefCell<Self::State>>,
         scope: Self::Scope,
         flags: u64,
-    ) -> Result<(), JsValue>
-    {
-        self.content.update(parent, state, (scope, self.factory.clone()), flags)?;
+    ) -> Result<(), JsValue> {
+        self.content
+            .update(parent, state, (scope, self.factory.clone()), flags)?;
 
         Ok(())
     }
@@ -424,7 +473,7 @@ trait SnippetContentTrait {
 /// defines the content and behavior of the snippet. The references to
 /// State is weak so that factories themselves can be stored in state
 /// without causing memory leaks due to ownership cycles.
-/// 
+///
 /// Snippet factories can be cloned and passed around to different
 /// components and used to create snippets. Snippets created from a
 /// factory store a clone of that factory inside them, and when the

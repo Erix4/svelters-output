@@ -93,7 +93,11 @@ impl GenericFragment for RootFrag {
     type State = PageState;
     type Scope = ();
 
-    fn new(state_rc: Rc<RefCell<Self::State>>, scope: (), current_path: &Vec<u32>) -> Result<Self, JsValue> {
+    fn new(
+        state_rc: Rc<RefCell<Self::State>>,
+        scope: (),
+        current_path: &Vec<u32>,
+    ) -> Result<Self, JsValue> {
         let window = web_sys::window().expect("no global window exists");
         let document = window.document().expect("no document on window");
         let state_rc_clone = state_rc.clone();
@@ -106,7 +110,11 @@ impl GenericFragment for RootFrag {
         let el3 = document.create_element("p")?;
         el3.set_inner_html(&format!("Count: {}", *state.counter));
         let el4 = document.create_element("p")?;
-        let el5 = IfElement::new(state_rc_clone.clone(), scope, &prepend_path(current_path, 5))?;
+        let el5 = IfElement::new(
+            state_rc_clone.clone(),
+            scope,
+            &prepend_path(current_path, 5),
+        )?;
         let el6 = EachElement::new(state_rc_clone, scope, &prepend_path(current_path, 6))?;
         let el7 = document.create_element("div")?;
         let el8 = document.create_element("p")?;
@@ -123,7 +131,8 @@ impl GenericFragment for RootFrag {
         el4.set_inner_html(&format!("Struct B: {}", state.my_struct.b));
 
         let mut k_state = <snippet_switcher::RootFrag as GenericFragment>::State::startup(());
-        let k = Component::<snippet_switcher::RootFrag>::new(k_state, &prepend_path(current_path, 7))?;
+        let k =
+            Component::<snippet_switcher::RootFrag>::new(k_state, &prepend_path(current_path, 7))?;
 
         // target paths are static and unique to each fragment
         // listeners are in new() to preserve them if moved (unmounted & remounted)
@@ -226,7 +235,7 @@ impl GenericFragment for RootFrag {
         flags: u64,
     ) -> Result<(), JsValue> {
         let state_rc_clone = state_rc.clone();
-        let state= state_rc.borrow();
+        let state = state_rc.borrow();
         let state_rc = state_rc_clone;
 
         web_sys::console::log_1(&format!("Updating PageRootFrag with flags: {:b}", flags).into());
@@ -290,7 +299,12 @@ impl IfContentTrait for If1Content {
     type Scope = ();
     type State = PageState;
 
-    fn branch_changed(&self, state_rc: Rc<RefCell<Self::State>>, _scope: Self::Scope, flags: u64) -> bool {
+    fn branch_changed(
+        &self,
+        state_rc: Rc<RefCell<Self::State>>,
+        _scope: Self::Scope,
+        flags: u64,
+    ) -> bool {
         let state = state_rc.borrow();
 
         if flags & 1 << 0 != 0 {
@@ -366,7 +380,7 @@ impl IfContentTrait for If1Content {
 struct IfBranch1 {
     a: Element,
     b: Text,
-    c: Text,
+    c: DynamicText<PageState, ()>,
 }
 
 impl GenericFragment for IfBranch1 {
@@ -380,11 +394,18 @@ impl GenericFragment for IfBranch1 {
     ) -> Result<Self, JsValue> {
         let window = web_sys::window().expect("no global window exists");
         let document = window.document().expect("no document on window exists");
-        let state= state_rc.borrow();
 
         let el5_if = document.create_element("p")?;
         let el5_text_1 = document.create_text_node("Counter is greater than 5! ");
-        let el5_text_2 = document.create_text_node(&format!("{}", state.my_struct.a));
+        let el5_text_2 = DynamicText::new(
+            state_rc,
+            scope,
+            Box::new(|state_rc, scope| {
+                let state = state_rc.borrow();
+                format!("{}", state.my_struct.a)
+            }),
+            1 << 1,
+        );
 
         Ok(Self {
             a: el5_if,
@@ -396,7 +417,7 @@ impl GenericFragment for IfBranch1 {
     fn mount(&mut self, _parent: &Element, add_method: &dyn AddMethod) -> Result<(), JsValue> {
         add_method(&self.a)?;
         self.a.append_child(&self.b)?;
-        self.a.append_child(&self.c)?;
+        self.c.mount(&child_append_closure(&self.a))?;
         Ok(())
     }
 
@@ -415,15 +436,11 @@ impl GenericFragment for IfBranch1 {
         &mut self,
         _parent: &Element,
         state_rc: Rc<RefCell<Self::State>>,
-        _scope: Self::Scope,
+        scope: Self::Scope,
         flags: u64,
     ) -> Result<(), JsValue> {
-        let state = state_rc.borrow();
+        self.c.update(state_rc, scope, flags);
 
-        if flags & 1 << 1 != 0 {
-            self.b
-                .set_text_content(Some(&format!("{}", state.my_struct.a)));
-        }
         Ok(())
     }
 
@@ -579,7 +596,12 @@ impl IfContentTrait for If2Content {
     type Scope = ((), Rc<i32>);
     type State = PageState;
 
-    fn branch_changed(&self, _state: Rc<RefCell<Self::State>>, _scope: Self::Scope, _flags: u64) -> bool {
+    fn branch_changed(
+        &self,
+        _state: Rc<RefCell<Self::State>>,
+        _scope: Self::Scope,
+        _flags: u64,
+    ) -> bool {
         false // no dynamic content in this example, so branch never changes after initial render
     }
 

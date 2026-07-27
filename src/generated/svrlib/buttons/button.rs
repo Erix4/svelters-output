@@ -71,7 +71,7 @@ impl GenericFragment for RootFrag {
     type State = State;
     type Scope = ();
 
-    fn new(state: Rc<RefCell<Self::State>>, scope: (), current_path: &Vec<u32>) -> Result<Self, JsValue>
+    fn new(state: &Rc<RefCell<Self::State>>, scope: &Self::Scope, current_path: &Vec<u32>) -> Result<Self, JsValue>
     where
         Self: Sized,
     {
@@ -101,8 +101,7 @@ impl GenericFragment for RootFrag {
 
     fn proc(
         &mut self,
-        state: Rc<RefCell<Self::State>>,
-        scope: (),
+        state: &Rc<RefCell<Self::State>>,
         e: web_sys::Event,
         mut target_path: Vec<u32>,
     ) -> Result<(), JsValue> {
@@ -126,11 +125,9 @@ impl GenericFragment for RootFrag {
     fn update(
         &mut self,
         parent: &Element,
-        state: Rc<RefCell<Self::State>>,
-        scope: (),
+        state: &Self::State,
         flags: u64,
     ) -> Result<(), JsValue> {
-        let state = state.borrow();
         if flags & 1 << 0 != 0 {
             self.b
                 .set_inner_html(&format!("{}: {}", state.text, *state.button_counter));

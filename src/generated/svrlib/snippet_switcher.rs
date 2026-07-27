@@ -40,7 +40,7 @@ use crate::*;
 
 pub struct State {
     // Props:
-    pub snippet: MutateTracker<Box<dyn SnippetFactoryTrait<(String,)>>>,
+    pub snippet: MutateTracker<Box<dyn SnippetFactoryTrait<(DynamicArg<String>,)>>>,
 }
 
 // User defined functions for State
@@ -88,8 +88,8 @@ impl GenericFragment for RootFrag {
     type Scope = ();
 
     fn new(
-        state: Rc<RefCell<Self::State>>,
-        scope: (),
+        state: &Rc<RefCell<Self::State>>,
+        scope: &(),
         current_path: &Vec<u32>,
     ) -> Result<Self, JsValue>
     where
@@ -101,7 +101,7 @@ impl GenericFragment for RootFrag {
         //let snippet = SnippetElement::new(state, Test2Snippet::new(state, scope)?);
 
         let a = document.create_element("button")?;
-        let b = EachElement::new(state.clone(), scope, &prepend_path(current_path, 1))?;
+        let b = EachElement::new(state, scope, &prepend_path(current_path, 1))?;
         let c = document.create_text_node(&format!("Switch snippet!"));
 
         add_listener(&a, "click", prepend_path(current_path, 0))?;
@@ -119,14 +119,11 @@ impl GenericFragment for RootFrag {
 
     fn proc(
         &mut self,
-        state_rc: Rc<RefCell<Self::State>>,
-        scope: (),
+        state_rc: &Rc<RefCell<Self::State>>,
         e: web_sys::Event,
         mut target_path: Vec<u32>,
     ) -> Result<(), JsValue> {
-        let state_rc_clone = state_rc.clone();
         let mut state = state_rc.borrow_mut();
-        let state_rc = state_rc_clone;
 
         let target = target_path.pop().unwrap();
         match e.type_().as_str() {
@@ -147,12 +144,11 @@ impl GenericFragment for RootFrag {
     fn update(
         &mut self,
         parent: &Element,
-        state: Rc<RefCell<Self::State>>,
-        scope: (),
+        state: &Self::State,
         flags: u64,
     ) -> Result<(), JsValue> {
         if flags & 1 << 0 != 0 {
-            self.b.update(parent, state, scope, flags)?;
+            self.b.update(parent, state, flags)?;
         }
 
         Ok(())
@@ -173,11 +169,11 @@ struct Test1Snippet {
 impl SnippetContentTrait for Test1Snippet {
     type State = State;
     type Scope = ();
-    type Args = (String,);
+    type Args = (DynamicArg<String>,);
 
     fn new(
-        state: Rc<RefCell<Self::State>>,
-        scope: (Self::Scope, Rc<Self::Args>),
+        state: &Rc<RefCell<Self::State>>,
+        scope: &(Self::Scope, Self::Args),
         current_path: &Vec<u32>,
     ) -> Result<Self, JsValue>
     where
@@ -186,11 +182,10 @@ impl SnippetContentTrait for Test1Snippet {
         let window = web_sys::window().expect("no global window exists");
         let document = window.document().expect("no document on window");
 
-        let ((), args) = scope;
-        let (n,) = &*args;
+        let ((), (n,)) = scope;
 
         let a = document.create_element("div")?;
-        let b = document.create_text_node(&format!("{}", n));
+        let b = document.create_text_node(&format!("{}", n.get()));
 
         Ok(Self { a, b })
     }
@@ -204,8 +199,7 @@ impl SnippetContentTrait for Test1Snippet {
 
     fn proc(
         &mut self,
-        state: Rc<RefCell<Self::State>>,
-        scope: (Self::Scope, Rc<Self::Args>),
+        state: &Rc<RefCell<Self::State>>,
         e: web_sys::Event,
         target_path: Vec<u32>,
     ) -> Result<(), JsValue> {
@@ -215,8 +209,7 @@ impl SnippetContentTrait for Test1Snippet {
     fn update(
         &mut self,
         parent: &Element,
-        state: Rc<RefCell<Self::State>>,
-        scope: (Self::Scope, Rc<Self::Args>),
+        state: &Self::State,
         flags: u64,
     ) -> Result<(), JsValue> {
         Ok(())
@@ -236,21 +229,20 @@ struct Test2Snippet {
 impl SnippetContentTrait for Test2Snippet {
     type State = State;
     type Scope = ();
-    type Args = (String,);
+    type Args = (DynamicArg<String>,);
 
     fn new(
-        state: Rc<RefCell<Self::State>>,
-        scope: (Self::Scope, Rc<Self::Args>),
+        state: &Rc<RefCell<Self::State>>,
+        scope: &(Self::Scope, Self::Args),
         current_path: &Vec<u32>,
     ) -> Result<Self, JsValue> {
         let window = web_sys::window().expect("no global window exists");
         let document = window.document().expect("no document on window");
 
-        let ((), args) = scope;
-        let (n,) = &*args;
+        let ((), (n,)) = scope;
 
         let a = document.create_element("div")?;
-        let b = document.create_text_node(&format!("{} Wow!", n));
+        let b = document.create_text_node(&format!("{} Wow!", n.get()));
 
         Ok(Test2Snippet { a, b })
     }
@@ -264,8 +256,7 @@ impl SnippetContentTrait for Test2Snippet {
 
     fn proc(
         &mut self,
-        state: Rc<RefCell<Self::State>>,
-        scope: (Self::Scope, Rc<Self::Args>),
+        state: &Rc<RefCell<Self::State>>,
         e: web_sys::Event,
         target_path: Vec<u32>,
     ) -> Result<(), JsValue> {
@@ -275,8 +266,7 @@ impl SnippetContentTrait for Test2Snippet {
     fn update(
         &mut self,
         parent: &Element,
-        state: Rc<RefCell<Self::State>>,
-        scope: (Self::Scope, Rc<Self::Args>),
+        state: &Self::State,
         flags: u64,
     ) -> Result<(), JsValue> {
         Ok(())
@@ -288,7 +278,7 @@ impl SnippetContentTrait for Test2Snippet {
 }
 
 struct EachFrag1 {
-    a: Box<dyn SnippetElementTrait<(String,)>>,
+    a: Box<dyn SnippetElementTrait<(DynamicArg<String>,)>>,
 }
 
 impl EachContentTrait for EachFrag1 {
@@ -297,8 +287,8 @@ impl EachContentTrait for EachFrag1 {
     type State = State;
 
     fn generate(
-        state: Rc<RefCell<Self::State>>,
-        scope: Self::Scope,
+        state: &Self::State,
+        scope: &Self::Scope,
         flags: u64,
     ) -> Option<Vec<Self::Item>> {
         let _ = scope;
@@ -311,8 +301,8 @@ impl EachContentTrait for EachFrag1 {
     }
 
     fn new(
-        state_rc: Rc<RefCell<Self::State>>,
-        scope: (Self::Scope, Rc<Self::Item>),
+        state_rc: &Rc<RefCell<Self::State>>,
+        scope: &(Self::Scope, Rc<Self::Item>),
         current_path: &Vec<u32>,
     ) -> Result<Self, JsValue>
     where
@@ -321,7 +311,7 @@ impl EachContentTrait for EachFrag1 {
         let state = state_rc.borrow();
 
         let a = state.snippet.init(
-            Rc::new(("Hello world!".to_string(),)),
+            (DynamicArg::new(|| "Hello world!".to_string(), 0),),
             &prepend_path(current_path, 1),
         )?;
 
@@ -336,8 +326,7 @@ impl EachContentTrait for EachFrag1 {
 
     fn proc(
         &mut self,
-        state_rc: Rc<RefCell<Self::State>>,
-        scope: (Self::Scope, &Self::Item),
+        state_rc: &Rc<RefCell<Self::State>>,
         e: web_sys::Event,
         mut target_path: Vec<u32>,
     ) -> Result<(), JsValue> {
@@ -357,12 +346,9 @@ impl EachContentTrait for EachFrag1 {
     fn update(
         &mut self,
         parent: &Element,
-        state_rc: Rc<RefCell<Self::State>>,
-        scope: (Self::Scope, Rc<Self::Item>),
+        state: &Self::State,
         flags: u64,
     ) -> Result<(), JsValue> {
-        let state = state_rc.borrow();
-
         if flags & 1 << 0 != 0 {
             self.a = state.snippet.init_swap(parent, &self.a)?;
         }

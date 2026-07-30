@@ -171,6 +171,16 @@ impl SnippetContentTrait for Test1Snippet {
     type Scope = ();
     type Args = (DynamicArg<String>,);
 
+    fn update_args(
+        &mut self,
+        args: &mut Self::Args,
+        flags: u64,
+    )
+    {
+        let (n,) = args;
+        n.update(flags);
+    }
+
     fn new(
         state: &Rc<RefCell<Self::State>>,
         scope: &(Self::Scope, Self::Args),
@@ -230,6 +240,16 @@ impl SnippetContentTrait for Test2Snippet {
     type State = State;
     type Scope = ();
     type Args = (DynamicArg<String>,);
+
+    fn update_args(
+        &mut self,
+        args: &mut Self::Args,
+        flags: u64,
+    )
+    {
+        let (n,) = args;
+        n.update(flags);
+    }
 
     fn new(
         state: &Rc<RefCell<Self::State>>,
@@ -311,7 +331,7 @@ impl EachContentTrait for EachFrag1 {
         let state = state_rc.borrow();
 
         let a = state.snippet.init(
-            (DynamicArg::new(|| "Hello world!".to_string(), 0),),
+            (DynamicArg::new(|| "Hello world!".to_string(), |_| false),),
             &prepend_path(current_path, 1),
         )?;
 

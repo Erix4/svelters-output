@@ -5,3 +5,4 @@ mod utils;
 pub mod buttons;
 pub mod snippet_switcher;
 pub mod scoped_snippet;
+pub mod bindable_snippet;

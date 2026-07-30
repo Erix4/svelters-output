@@ -24,7 +24,7 @@
 
 */
 
-use crate::*;
+use crate::{generated::svrlib::scoped_snippet, *};
 
 pub struct State {
     //
@@ -91,12 +91,7 @@ impl GenericFragment for RootFrag {
         Ok(())
     }
 
-    fn update(
-        &mut self,
-        parent: &Element,
-        state: &Self::State,
-        flags: u64,
-    ) -> Result<(), JsValue> {
+    fn update(&mut self, parent: &Element, state: &Self::State, flags: u64) -> Result<(), JsValue> {
         self.a.update(parent, state, flags)?;
         Ok(())
     }
@@ -109,6 +104,11 @@ impl GenericFragment for RootFrag {
 struct NonScopedSnippet {
     a: Element,
     b: DynamicText,
+
+    d_scope: (
+        <Self as SnippetContentTrait>::Scope,
+        <Self as SnippetContentTrait>::Args,
+    ),
 }
 
 impl SnippetContentTrait for NonScopedSnippet {
@@ -116,9 +116,14 @@ impl SnippetContentTrait for NonScopedSnippet {
     type Scope = ();
     type Args = (DynamicArg<i32>,);
 
+    fn update_args(&mut self, args: &mut Self::Args, flags: u64) {
+        let (n,) = args;
+        n.update(flags);
+    }
+
     fn new(
         state_rc: &Rc<RefCell<Self::State>>,
-        scope: &(Self::Scope, Rc<Self::Args>),
+        scope: &(Self::Scope, Self::Args),
         current_path: &Vec<u32>,
     ) -> Result<Self, JsValue>
     where
@@ -128,14 +133,31 @@ impl SnippetContentTrait for NonScopedSnippet {
         let document = window.document().expect("no document on window");
 
         let a = document.create_element("p")?;
+
+        let scope_clone = scope.clone();
+        let scope_clone2 = scope.clone();
+        let mut versions = (0,);
         let b = DynamicText::new(
-            Rc::new(|| {
-                return format!("Scoped Snippets");
-            }),
-            1 << 1,
+            move || {
+                let ((), (n,)) = &scope_clone;
+                return format!("Non-scoped {}", n.get());
+            },
+            move |_flags| {
+                let ((), (n,)) = &scope_clone2;
+                let (n_ver,) = &mut versions;
+                if n.version() > *n_ver {
+                    *n_ver += 1;
+                    return true;
+                }
+                false
+            },
         );
 
-        Ok(Self { a, b })
+        Ok(Self {
+            a,
+            b,
+            d_scope: scope.clone(),
+        })
     }
 
     fn mount(&mut self, parent: &Element, add_method: &dyn AddMethod) -> Result<(), JsValue> {
@@ -162,6 +184,11 @@ impl SnippetContentTrait for NonScopedSnippet {
         flags: u64,
     ) -> Result<(), JsValue> {
         self.b.update(flags)?;
+
+        let ((), (i,)) = &mut self.d_scope;
+
+        self.b.update(flags)?;
+
         Ok(())
     }
 
@@ -195,10 +222,10 @@ impl GenericFragment for GenericFrag1 {
         let a = document.create_element("div")?;
         let b = document.create_element("h1")?;
         let c = DynamicText::new(
-            Rc::new(|| {
+            || {
                 return format!("Scoped Snippets");
-            }),
-            1 << 1,
+            },
+            |_| false,
         );
         let d = EachElement::new(state_rc, scope, &prepend_path(current_path, 1))?;
 
@@ -223,12 +250,7 @@ impl GenericFragment for GenericFrag1 {
         Ok(())
     }
 
-    fn update(
-        &mut self,
-        parent: &Element,
-        state: &Self::State,
-        flags: u64,
-    ) -> Result<(), JsValue> {
+    fn update(&mut self, parent: &Element, state: &Self::State, flags: u64) -> Result<(), JsValue> {
         Ok(())
     }
 
@@ -251,7 +273,7 @@ impl EachContentTrait for EachFrag1 {
 
     fn generate(state: &Self::State, scope: &Self::Scope, flags: u64) -> Option<Vec<Self::Item>> {
         let _ = scope;
-        if flags & 1u64 != 0 {
+        if true {
             // TODO: do only first time
             Some((0..5).into_iter().collect::<Vec<_>>())
         } else {
@@ -275,6 +297,7 @@ impl EachContentTrait for EachFrag1 {
     }
 
     fn mount(&mut self, parent: &Element, add_method: &dyn AddMethod) -> Result<(), JsValue> {
+        self.a.mount(parent, add_method)?;
         Ok(())
     }
 
@@ -322,7 +345,7 @@ impl GenericFragment for FirstScopeRenderFrag {
     {
         let (((_, _), _), factory) = scope;
 
-        let a = factory.init(Rc::new(()), current_path)?;
+        let a = factory.init((), current_path)?;
 
         Ok(Self { a })
     }
@@ -342,13 +365,8 @@ impl GenericFragment for FirstScopeRenderFrag {
         Ok(())
     }
 
-    fn update(
-        &mut self,
-        parent: &Element,
-        state: &Self::State,
-        flags: u64,
-    ) -> Result<(), JsValue> {
-        self.a.update(parent, (), flags)?;
+    fn update(&mut self, parent: &Element, state: &Self::State, flags: u64) -> Result<(), JsValue> {
+        self.a.update(parent, flags)?;
         Ok(())
     }
 
@@ -366,21 +384,45 @@ impl SnippetContentTrait for FirstScopeSnippet {
     type Scope = (((), Rc<SnippetFactory<NonScopedSnippet>>), Rc<i32>);
     type Args = ();
 
+    fn update_args(&mut self, args: &mut Self::Args, flags: u64) {}
+
     fn new(
         state_rc: &Rc<RefCell<Self::State>>,
         scope: &(Self::Scope, Self::Args),
         current_path: &Vec<u32>,
     ) -> Result<Self, JsValue>
     where
-        Self: Sized
+        Self: Sized,
     {
-        let (((_, factory), each_item), arg) = scope.clone();
+        let a = SnippetScope::new(state_rc, scope, current_path)?;
 
-        let a = factory.init((DynamicArg::new(|| *each_item, 0),), current_path)?;
+        Ok(Self { a })
+    }
 
-        Ok(Self {
-            a
-        })
+    fn mount(&mut self, parent: &Element, add_method: &dyn AddMethod) -> Result<(), JsValue> {
+        self.a.mount(parent, add_method)?;
+
+        Ok(())
+    }
+
+    fn proc(
+        &mut self,
+        state_rc: &Rc<RefCell<Self::State>>,
+        e: web_sys::Event,
+        mut target_path: Vec<u32>,
+    ) -> Result<(), JsValue> {
+        self.a.proc(state_rc, e, target_path)?;
+
+        Ok(())
+    }
+
+    fn update(&mut self, parent: &Element, state: &Self::State, flags: u64) -> Result<(), JsValue> {
+        self.a.update(parent, state, flags)?;
+        Ok(())
+    }
+
+    fn unmount(&self) {
+        self.a.unmount();
     }
 }
 
@@ -391,27 +433,129 @@ struct SecondScopeSnippet {
 
 impl SnippetContentTrait for SecondScopeSnippet {
     type State = State;
-    type Scope = (
-        (((), Rc<SnippetFactory<NonScopedSnippet>>), Rc<i32>),
-        Rc<SnippetFactory<FirstScopeSnippet>>,
-    );
+    type Scope = ((((), Rc<SnippetFactory<NonScopedSnippet>>), Rc<i32>), ());
     type Args = ();
+
+    fn update_args(&mut self, args: &mut Self::Args, flags: u64) {}
+
+    fn new(
+        state_rc: &Rc<RefCell<Self::State>>,
+        scope: &(Self::Scope, Self::Args),
+        current_path: &Vec<u32>,
+    ) -> Result<Self, JsValue>
+    where
+        Self: Sized,
+    {
+        let window = web_sys::window().expect("no global window exists");
+        let document = window.document().expect("no document on window");
+
+        let a = document.create_element("p")?;
+
+        let scope_clone = scope.clone();
+        let thunk = move || {
+            let ((((_, _), i), _), ()) = &scope_clone;
+            return format!("Second scope {}", i);
+        };
+        let b = DynamicText::new(thunk, |_| false);
+
+        Ok(Self { a, b })
+    }
+
+    fn mount(&mut self, parent: &Element, add_method: &dyn AddMethod) -> Result<(), JsValue> {
+        add_method(&self.a)?;
+        self.b.mount(&child_append_closure(&self.a))?;
+
+        Ok(())
+    }
+
+    fn proc(
+        &mut self,
+        state_rc: &Rc<RefCell<Self::State>>,
+        e: web_sys::Event,
+        target_path: Vec<u32>,
+    ) -> Result<(), JsValue> {
+        Ok(())
+    }
+
+    fn update(&mut self, parent: &Element, state: &Self::State, flags: u64) -> Result<(), JsValue> {
+        self.b.update(flags)?;
+        Ok(())
+    }
+
+    fn unmount(&self) {
+        self.a.remove();
+        self.b.unmount();
+    }
 }
 
 struct GenericFrag2 {
-    a: Box<dyn SnippetElementTrait<(i32,)>>,
+    a: Box<dyn SnippetElementTrait<(DynamicArg<i32>,)>>,
     b: Element,
-    c: DynamicText,
+    c: Text,
     d: Box<dyn SnippetElementTrait<()>>,
 }
 
 impl GenericFragment for GenericFrag2 {
     type State = State;
     type Scope = (
-        (
-            (((), Rc<SnippetFactory<NonScopedSnippet>>), Rc<i32>),
-            Rc<SnippetFactory<FirstScopeSnippet>>,
-        ),
+        ((((), Rc<SnippetFactory<NonScopedSnippet>>), Rc<i32>), ()),
         Rc<SnippetFactory<SecondScopeSnippet>>,
     );
+
+    fn new(
+        state: &Rc<RefCell<Self::State>>,
+        scope: &Self::Scope,
+        current_path: &Vec<u32>,
+    ) -> Result<Self, JsValue>
+    where
+        Self: Sized,
+    {
+        let window = web_sys::window().expect("no global window exists");
+        let document = window.document().expect("no document on window");
+
+        let ((((_, non_scoped), i), first_scope), second_scope) = scope.clone();
+
+        let a = non_scoped.init((DynamicArg::new(move || *i, |_| false),), current_path)?;
+        let b = document.create_element("p")?;
+        let c = document.create_text_node(&format!("First scope"));
+        let d = second_scope.init((), &prepend_path(current_path, 1))?;
+
+        Ok(Self { a, b, c, d })
+    }
+
+    fn mount(&mut self, parent: &Element, add_method: &dyn AddMethod) -> Result<(), JsValue> {
+        self.a.mount(parent, add_method)?;
+        add_method(&self.b)?;
+        self.b.append_child(&self.c)?;
+        self.d.mount(parent, add_method)?;
+
+        Ok(())
+    }
+
+    fn proc(
+        &mut self,
+        state: &Rc<RefCell<Self::State>>,
+        e: web_sys::Event,
+        mut target_path: Vec<u32>,
+    ) -> Result<(), JsValue> {
+        let target = target_path.pop().unwrap();
+        match e.type_().as_str() {
+            _ => {}
+        }
+
+        Ok(())
+    }
+
+    fn update(&mut self, parent: &Element, state: &Self::State, flags: u64) -> Result<(), JsValue> {
+        self.a.update(parent, flags)?;
+        self.d.update(parent, flags)?;
+
+        Ok(())
+    }
+
+    fn unmount(&self) {
+        self.a.unmount();
+        self.b.remove();
+        self.d.unmount();
+    }
 }

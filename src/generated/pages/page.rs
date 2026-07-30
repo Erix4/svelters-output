@@ -1,6 +1,7 @@
 // converted from `use $components::buttons::Button;`
 use crate::generated::svrlib::buttons::button;
 
+use crate::generated::svrlib::scoped_snippet;
 use crate::generated::svrlib::snippet_switcher::{self, State};
 use crate::*;
 
@@ -87,6 +88,7 @@ pub struct RootFrag {
     i: Element,
     j: Component<button::RootFrag>,
     k: Component<snippet_switcher::RootFrag>,
+    l: Component<scoped_snippet::RootFrag>,
 
     d_scope: <Self as GenericFragment>::Scope,
 }
@@ -135,6 +137,9 @@ impl GenericFragment for RootFrag {
         let k =
             Component::<snippet_switcher::RootFrag>::new(&k_state, &prepend_path(current_path, 7))?;
 
+        let l_state = <scoped_snippet::RootFrag as GenericFragment>::State::startup(());
+        let l = Component::<scoped_snippet::RootFrag>::new(&l_state, &prepend_path(current_path, 8))?;
+
         // target paths are static and unique to each fragment
         // listeners are in new() to preserve them if moved (unmounted & remounted)
         add_listener(&el1, "click", prepend_path(current_path, 1))?;
@@ -152,6 +157,7 @@ impl GenericFragment for RootFrag {
             i: el8,
             j: el9,
             k,
+            l,
 
             d_scope: scope.clone(),
         })
@@ -169,6 +175,7 @@ impl GenericFragment for RootFrag {
         self.a.append_child(&self.h)?;
         self.h.append_child(&self.i)?;
         self.k.mount(&self.a, &child_append_closure(&self.a))?;
+        self.l.mount(&self.a, &child_append_closure(&self.a))?;
         Ok(())
     }
 
@@ -390,11 +397,11 @@ impl GenericFragment for IfBranch1 {
 
         let state_rc_clone = state_rc.clone();
         let el5_text_2 = DynamicText::new(
-            Rc::new(move || {
+            move || {
                 let state = state_rc_clone.borrow();
                 return format!("{}", state.my_struct.a);
-            }),
-            1 << 1,
+            },
+            |flags| flags & 1 << 1 != 0,
         );
 
         Ok(Self {

@@ -1,11 +1,15 @@
 // static
 
 use std::{
-    cell::{Ref, RefCell}, ops::{Deref, DerefMut}, rc::{Rc, Weak}, sync::atomic::{AtomicU64, Ordering::SeqCst}, vec,
+    cell::{Ref, RefCell},
+    marker::PhantomData,
+    ops::{Deref, DerefMut},
+    rc::{Rc, Weak},
+    sync::atomic::{AtomicU64, Ordering::SeqCst},
+    vec,
 };
 use wasm_bindgen::{
-    prelude::{wasm_bindgen, Closure},
-    JsCast, JsValue,
+    JsCast, JsError, JsValue, prelude::{Closure, wasm_bindgen},
 };
 use web_sys::{Comment, Element, Node, Text};
 
@@ -43,7 +47,8 @@ impl<T> DerefMut for MutateTracker<T> {
 }
 
 fn try_upgrade<S>(weak: &Weak<RefCell<S>>) -> Result<Rc<RefCell<S>>, JsValue> {
-    weak.upgrade().ok_or_else(|| JsValue::from_str("Failed to upgrade Weak reference"))
+    weak.upgrade()
+        .ok_or_else(|| JsValue::from_str("Failed to upgrade Weak reference"))
 }
 
 // TODO: router stuff
@@ -221,7 +226,7 @@ trait GenericFragment {
     /// #snippet elements create scope items whenever a changes is made to its
     /// arguments. These elements _can_ change, so they are wrapped in
     /// DynamicArg structs which track when they have been changed.
-    /// 
+    ///
     /// #snippet scopes create factories on `new`, and while those factories
     /// change internally and may need to trigger updates of the underlying
     /// elements, the actual value of the factory does not change, so it is
@@ -248,27 +253,22 @@ trait GenericFragment {
         e: web_sys::Event,
         target_path: Vec<u32>,
     ) -> Result<(), JsValue>;
-    fn update(
-        &mut self,
-        parent: &Element,
-        state: &Self::State,
-        flags: u64,
-    ) -> Result<(), JsValue>;
+    fn update(&mut self, parent: &Element, state: &Self::State, flags: u64) -> Result<(), JsValue>;
     fn unmount(&self);
 }
 
 struct DynamicText {
-    text: Text,
-    callback: Rc<dyn Fn() -> String>,
-    flag_mask: u64,
+    text: Text, // this is a cloneable reference to a DOM element
+    thunk: Rc<dyn Fn() -> String>,
+    gate_closure: Rc<RefCell<dyn FnMut(u64) -> bool>>,
 }
 
 impl DynamicText {
     fn new(
-        closure: Rc<dyn Fn() -> String>,
-        flag_mask: u64,
+        thunk: impl Fn() -> String + 'static,
+        gate_closure: impl FnMut(u64) -> bool + 'static,
     ) -> Self {
-        let text_str = closure();
+        let text_str = thunk();
 
         let window = web_sys::window().expect("no global window exists");
         let document = window.document().expect("no document on window");
@@ -277,8 +277,8 @@ impl DynamicText {
 
         DynamicText {
             text,
-            callback: closure,
-            flag_mask,
+            thunk: Rc::new(thunk),
+            gate_closure: Rc::new(RefCell::new(gate_closure)),
         }
     }
 
@@ -286,13 +286,9 @@ impl DynamicText {
         add_method(&self.text)
     }
 
-    fn update(
-        &mut self,
-        flags: u64,
-    ) -> Result<(), JsValue> {
-        if flags & self.flag_mask != 0 {
-            self.text
-                .set_text_content(Some(&(self.callback)()));
+    fn update(&mut self, flags: u64) -> Result<(), JsValue> {
+        if (self.gate_closure.borrow_mut())(flags) {
+            self.text.set_text_content(Some(&(self.thunk)()));
         }
 
         Ok(())
@@ -303,47 +299,41 @@ impl DynamicText {
     }
 }
 
+#[derive(Clone)]
 struct DynamicArg<T> {
-    callback: Rc<dyn Fn() -> T>,
-    flag_mask: u64,
-    pub version: u64,
+    thunk: Rc<dyn Fn() -> T>,
+    gate_closure: Rc<RefCell<dyn FnMut(u64) -> bool>>,
+    pub version: Rc<RefCell<u64>>,
     value: Rc<RefCell<T>>,
 }
 
 impl<T> DynamicArg<T> {
     fn new(
         callback: impl Fn() -> T + 'static,
-        flag_mask: u64,
+        gate_closure: impl FnMut(u64) -> bool + 'static,
     ) -> Self {
         let value = Rc::new(RefCell::new(callback()));
         DynamicArg {
-            callback: Rc::new(callback),
-            flag_mask,
-            version: 0,
+            thunk: Rc::new(callback),
+            gate_closure: Rc::new(RefCell::new(gate_closure)),
+            version: Rc::new(RefCell::new(0)),
             value,
         }
     }
 
     fn update(&mut self, flags: u64) {
-        if flags & self.flag_mask != 0 {
-            self.version += 1;
-            *self.value.borrow_mut() = (self.callback)();
+        if (self.gate_closure.borrow_mut())(flags) {
+            *self.version.borrow_mut() += 1;
+            *self.value.borrow_mut() = (self.thunk)();
         }
     }
 
     fn get(&self) -> Ref<'_, T> {
         self.value.borrow()
     }
-}
 
-impl<T> Clone for DynamicArg<T> {
-    fn clone(&self) -> Self {
-        DynamicArg {
-            callback: self.callback.clone(),
-            flag_mask: self.flag_mask,
-            version: self.version,
-            value: self.value.clone(),
-        }
+    fn version(&self) -> u64 {
+        *self.version.borrow()
     }
 }
 
@@ -402,8 +392,7 @@ impl<
         e: web_sys::Event,
         target_path: Vec<u32>,
     ) -> Result<(), JsValue> {
-        self.content
-            .proc(state_rc, e, target_path)?;
+        self.content.proc(state_rc, e, target_path)?;
 
         Ok(())
     }
@@ -414,8 +403,7 @@ impl<
         state_rc: &Self::State,
         flags: u64,
     ) -> Result<(), JsValue> {
-        self.content
-            .update(parent, state_rc, flags)?;
+        self.content.update(parent, state_rc, flags)?;
 
         Ok(())
     }
@@ -436,7 +424,7 @@ struct SnippetElement<T: SnippetContentTrait> {
 trait SnippetElementTrait<Args> {
     fn mount(&mut self, parent: &Element, add_method: &dyn AddMethod) -> Result<(), JsValue>;
     fn proc(&mut self, e: web_sys::Event, target_path: Vec<u32>) -> Result<(), JsValue>;
-    fn update(&mut self, parent: &Element, args: Args, flags: u64) -> Result<(), JsValue>;
+    fn update(&mut self, parent: &Element, flags: u64) -> Result<(), JsValue>;
     fn unmount(&self);
 
     fn extract_for_swap(&self) -> (Args, Vec<u32>, web_sys::Comment);
@@ -452,20 +440,14 @@ impl<T: SnippetContentTrait> SnippetElementTrait<T::Args> for SnippetElement<T> 
     }
 
     fn proc(&mut self, e: web_sys::Event, target_path: Vec<u32>) -> Result<(), JsValue> {
-        self.content.proc(
-            &try_upgrade(&self.factory.state)?,
-            e,
-            target_path,
-        )
+        self.content
+            .proc(&try_upgrade(&self.factory.state)?, e, target_path)
     }
 
-    fn update(&mut self, parent: &Element, args: T::Args, flags: u64) -> Result<(), JsValue> {
-        self.content.update(
-            parent,
-            &try_upgrade(&self.factory.state)?.borrow(),
-            flags,
-        );
-        self.args = args;
+    fn update(&mut self, parent: &Element, flags: u64) -> Result<(), JsValue> {
+        self.content.update_args(&mut self.args, flags);
+        self.content
+            .update(parent, &try_upgrade(&self.factory.state)?.borrow(), flags);
 
         Ok(())
     }
@@ -488,6 +470,8 @@ trait SnippetContentTrait {
     type Scope: Clone;
     type Args: Clone;
 
+    fn update_args(&mut self, args: &mut Self::Args, flags: u64);
+
     fn new(
         state_rc: &Rc<RefCell<Self::State>>,
         scope: &(Self::Scope, Self::Args),
@@ -503,12 +487,7 @@ trait SnippetContentTrait {
         e: web_sys::Event,
         target_path: Vec<u32>,
     ) -> Result<(), JsValue>;
-    fn update(
-        &mut self,
-        parent: &Element,
-        state: &Self::State,
-        flags: u64,
-    ) -> Result<(), JsValue>;
+    fn update(&mut self, parent: &Element, state: &Self::State, flags: u64) -> Result<(), JsValue>;
     fn unmount(&self);
 }
 
@@ -525,7 +504,7 @@ trait SnippetContentTrait {
 /// update_flags), the snippet will update itself.
 struct SnippetFactory<T: SnippetContentTrait> {
     state: Weak<RefCell<T::State>>,
-    scope: T::Scope, // nested Rc<RefCell>s
+    scope: T::Scope, // nested Rcs/DynamicArgs
     update_flags: Rc<RefCell<u64>>,
 }
 
@@ -620,6 +599,37 @@ impl<T: SnippetContentTrait + 'static> SnippetFactoryTrait<T::Args> for SnippetF
     }
 }
 
+struct DummyFactory<T> {
+    _phantom: PhantomData<T>,
+}
+
+impl<T> DummyFactory<T> {
+    fn new() -> Self {
+        DummyFactory { _phantom: PhantomData }
+    }
+}
+
+impl<T> SnippetFactoryTrait<T> for DummyFactory<T> {
+    fn init(
+        &self,
+        args: T,
+        current_path: &Vec<u32>,
+    ) -> Result<Box<dyn SnippetElementTrait<T>>, JsValue> {
+        Err(JsError::new("Tried to get snippet from dummy factory").into())
+    }
+
+    fn init_swap(
+        &self,
+        parent: &Element,
+        old_element: &Box<dyn SnippetElementTrait<T>>,
+    ) -> Result<Box<dyn SnippetElementTrait<T>>, JsValue>
+    {
+        Err(JsError::new("Tried to get snippet from dummy factory").into())
+    }
+
+    fn update(&mut self, flags: u64) {}
+}
+
 struct IfElement<T: IfContentTrait> {
     pub comment: Comment,
     pub content_enum: T,
@@ -644,16 +654,11 @@ trait IfContentTrait {
     fn mount(&mut self, parent: &Element, add_method: &dyn AddMethod) -> Result<(), JsValue>;
     fn proc(
         &mut self,
-        state:&Rc<RefCell<Self::State>>,
+        state: &Rc<RefCell<Self::State>>,
         e: web_sys::Event,
         target_path: Vec<u32>,
     ) -> Result<(), JsValue>;
-    fn update(
-        &mut self,
-        parent: &Element,
-        state: &Self::State,
-        flags: u64,
-    ) -> Result<(), JsValue>;
+    fn update(&mut self, parent: &Element, state: &Self::State, flags: u64) -> Result<(), JsValue>;
     fn unmount(&self);
 }
 
@@ -693,16 +698,8 @@ impl<T: IfContentTrait> GenericFragment for IfElement<T> {
         self.content_enum.proc(state, e, target_path)
     }
 
-    fn update(
-        &mut self,
-        parent: &Element,
-        state: &Self::State,
-        flags: u64,
-    ) -> Result<(), JsValue> {
-        let changed = {
-            self.content_enum
-                .branch_changed(&state, &self.scope, flags)
-        };
+    fn update(&mut self, parent: &Element, state: &Self::State, flags: u64) -> Result<(), JsValue> {
+        let changed = { self.content_enum.branch_changed(&state, &self.scope, flags) };
 
         if changed {
             // Unmount old content
@@ -755,12 +752,7 @@ trait EachContentTrait {
         e: web_sys::Event,
         target_path: Vec<u32>,
     ) -> Result<(), JsValue>;
-    fn update(
-        &mut self,
-        parent: &Element,
-        state: &Self::State,
-        flags: u64,
-    ) -> Result<(), JsValue>;
+    fn update(&mut self, parent: &Element, state: &Self::State, flags: u64) -> Result<(), JsValue>;
     fn unmount(&self);
 }
 
@@ -778,17 +770,14 @@ impl<T: EachContentTrait> GenericFragment for EachElement<T> {
 
         Ok(Self {
             comment: document.create_comment(""),
-            content: T::generate(&state_rc.borrow(), scope, u64::MAX).unwrap()
+            content: T::generate(&state_rc.borrow(), scope, u64::MAX)
+                .unwrap()
                 .into_iter()
                 .map(|item| {
                     let hash = hash_item(&item);
                     let item_rc = Rc::new(item);
-                    let content = T::new(
-                        state_rc,
-                        &(scope.clone(), item_rc.clone()),
-                        current_path,
-                    )
-                    .expect("Failed to create content");
+                    let content = T::new(state_rc, &(scope.clone(), item_rc.clone()), current_path)
+                        .expect("Failed to create content");
                     (hash, content, item_rc)
                 })
                 .collect(),
@@ -813,21 +802,12 @@ impl<T: EachContentTrait> GenericFragment for EachElement<T> {
         target_path: Vec<u32>,
     ) -> Result<(), JsValue> {
         for (_, content, _item) in &mut self.content {
-            content.proc(
-                state_rc,
-                e.clone(),
-                target_path.clone(),
-            )?;
+            content.proc(state_rc, e.clone(), target_path.clone())?;
         }
         Ok(())
     }
 
-    fn update(
-        &mut self,
-        parent: &Element,
-        state: &Self::State,
-        flags: u64,
-    ) -> Result<(), JsValue> {
+    fn update(&mut self, parent: &Element, state: &Self::State, flags: u64) -> Result<(), JsValue> {
         // Diff & update each list if necessary
         if let Some(new_items) = T::generate(state, &self.scope, flags) {
             let new_hashes: Vec<u64> = new_items.iter().map(|item| hash_item(item)).collect();
@@ -931,11 +911,7 @@ impl<T: EachContentTrait> GenericFragment for EachElement<T> {
 
         // Update all items (including moved ones) with new scope and flags
         for (_, content, _item) in &mut self.content {
-            content.update(
-                parent,
-                state,
-                flags,
-            )?;
+            content.update(parent, state, flags)?;
         }
 
         Ok(())

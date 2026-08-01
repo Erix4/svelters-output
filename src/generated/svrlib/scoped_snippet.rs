@@ -206,7 +206,7 @@ struct GenericFrag1 {
 
 impl GenericFragment for GenericFrag1 {
     type State = State;
-    type Scope = ((), Rc<SnippetFactory<NonScopedSnippet>>);
+    type Scope = ((), SnippetFactory<NonScopedSnippet>);
 
     fn new(
         state_rc: &Rc<RefCell<Self::State>>,
@@ -268,7 +268,7 @@ struct EachFrag1 {
 
 impl EachContentTrait for EachFrag1 {
     type Item = <std::ops::Range<i32> as IntoIterator>::Item;
-    type Scope = ((), Rc<SnippetFactory<NonScopedSnippet>>);
+    type Scope = ((), SnippetFactory<NonScopedSnippet>);
     type State = State;
 
     fn generate(state: &Self::State, scope: &Self::Scope, flags: u64) -> Option<Vec<Self::Item>> {
@@ -331,8 +331,8 @@ struct FirstScopeRenderFrag {
 impl GenericFragment for FirstScopeRenderFrag {
     type State = State;
     type Scope = (
-        (((), Rc<SnippetFactory<NonScopedSnippet>>), Rc<i32>),
-        Rc<SnippetFactory<FirstScopeSnippet>>,
+        (((), SnippetFactory<NonScopedSnippet>), Rc<i32>),
+        SnippetFactory<FirstScopeSnippet>,
     );
 
     fn new(
@@ -381,7 +381,7 @@ struct FirstScopeSnippet {
 
 impl SnippetContentTrait for FirstScopeSnippet {
     type State = State;
-    type Scope = (((), Rc<SnippetFactory<NonScopedSnippet>>), Rc<i32>);
+    type Scope = (((), SnippetFactory<NonScopedSnippet>), Rc<i32>);
     type Args = ();
 
     fn update_args(&mut self, args: &mut Self::Args, flags: u64) {}
@@ -433,7 +433,7 @@ struct SecondScopeSnippet {
 
 impl SnippetContentTrait for SecondScopeSnippet {
     type State = State;
-    type Scope = ((((), Rc<SnippetFactory<NonScopedSnippet>>), Rc<i32>), ());
+    type Scope = ((((), SnippetFactory<NonScopedSnippet>), Rc<i32>), ());
     type Args = ();
 
     fn update_args(&mut self, args: &mut Self::Args, flags: u64) {}
@@ -498,8 +498,8 @@ struct GenericFrag2 {
 impl GenericFragment for GenericFrag2 {
     type State = State;
     type Scope = (
-        ((((), Rc<SnippetFactory<NonScopedSnippet>>), Rc<i32>), ()),
-        Rc<SnippetFactory<SecondScopeSnippet>>,
+        ((((), SnippetFactory<NonScopedSnippet>), Rc<i32>), ()),
+        SnippetFactory<SecondScopeSnippet>,
     );
 
     fn new(

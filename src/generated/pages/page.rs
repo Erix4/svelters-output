@@ -1,3 +1,4 @@
+use crate::generated::svrlib::bindable_snippet::bs_parent;
 // converted from `use $components::buttons::Button;`
 use crate::generated::svrlib::buttons::button;
 
@@ -89,6 +90,7 @@ pub struct RootFrag {
     j: Component<button::RootFrag>,
     k: Component<snippet_switcher::RootFrag>,
     l: Component<scoped_snippet::RootFrag>,
+    m: Component<bs_parent::RootFrag>,
 
     d_scope: <Self as GenericFragment>::Scope,
 }
@@ -140,6 +142,9 @@ impl GenericFragment for RootFrag {
         let l_state = <scoped_snippet::RootFrag as GenericFragment>::State::startup(());
         let l = Component::<scoped_snippet::RootFrag>::new(&l_state, &prepend_path(current_path, 8))?;
 
+        let m_state = bs_parent::State::startup(());
+        let m = Component::<bs_parent::RootFrag>::new(&m_state, &prepend_path(current_path, 9))?;
+        
         // target paths are static and unique to each fragment
         // listeners are in new() to preserve them if moved (unmounted & remounted)
         add_listener(&el1, "click", prepend_path(current_path, 1))?;
@@ -158,6 +163,7 @@ impl GenericFragment for RootFrag {
             j: el9,
             k,
             l,
+            m,
 
             d_scope: scope.clone(),
         })
@@ -176,6 +182,8 @@ impl GenericFragment for RootFrag {
         self.h.append_child(&self.i)?;
         self.k.mount(&self.a, &child_append_closure(&self.a))?;
         self.l.mount(&self.a, &child_append_closure(&self.a))?;
+        self.m.mount(&self.a, &child_append_closure(&self.a))?;
+
         Ok(())
     }
 
@@ -229,6 +237,9 @@ impl GenericFragment for RootFrag {
             }
             _ if target == 7 => {
                 self.k.proc(e, target_path)?;
+            }
+            _ if target == 8 => {
+                self.m.proc(e, target_path)?;
             }
             _ => {}
         }

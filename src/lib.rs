@@ -9,9 +9,10 @@ use std::{
     vec,
 };
 use wasm_bindgen::{
-    JsCast, JsError, JsValue, prelude::{Closure, wasm_bindgen},
+    prelude::{wasm_bindgen, Closure},
+    JsCast, JsError, JsValue,
 };
-use web_sys::{Comment, Element, Node, Text};
+use web_sys::{Comment, Element, Node, Text, HtmlInputElement};
 
 use crate::generated::RootFrag;
 
@@ -21,7 +22,7 @@ pub static DIRTY_FLAGS: AtomicU64 = AtomicU64::new(0);
 
 pub struct MutateTracker<T> {
     value: T,
-    id: u32,
+    pub id: u32,
 }
 
 impl<T> MutateTracker<T> {
@@ -200,9 +201,8 @@ where
         Ok(())
     }
 
-    fn unmount(&mut self) {
+    fn unmount(&self) {
         self.contents.unmount();
-        self.parent = None;
     }
 }
 
@@ -348,15 +348,15 @@ impl<T> DynamicArg<T> {
 /// the snippets.
 struct SnippetScope<
     FC: SnippetContentTrait,
-    T: GenericFragment<Scope = (FC::Scope, Rc<SnippetFactory<FC>>), State = FC::State>,
+    T: GenericFragment<Scope = (FC::Scope, SnippetFactory<FC>), State = FC::State>,
 > {
     pub content: T,
-    pub factory: Rc<SnippetFactory<FC>>,
+    pub factory: SnippetFactory<FC>,
 }
 
 impl<
         FC: SnippetContentTrait,
-        T: GenericFragment<Scope = (FC::Scope, Rc<SnippetFactory<FC>>), State = FC::State>,
+        T: GenericFragment<Scope = (FC::Scope, SnippetFactory<FC>), State = FC::State>,
     > GenericFragment for SnippetScope<FC, T>
 {
     type Scope = FC::Scope;
@@ -370,11 +370,11 @@ impl<
     where
         Self: Sized,
     {
-        let factory = Rc::new(SnippetFactory::<FC>::new(
+        let factory = SnippetFactory::<FC>::new(
             Rc::downgrade(&state_rc),
             scope.clone(),
             current_path,
-        ));
+        );
         let content = T::new(state_rc, &(scope.clone(), factory.clone()), current_path)?;
 
         Ok(SnippetScope { content, factory })
@@ -447,7 +447,7 @@ impl<T: SnippetContentTrait> SnippetElementTrait<T::Args> for SnippetElement<T> 
     fn update(&mut self, parent: &Element, flags: u64) -> Result<(), JsValue> {
         self.content.update_args(&mut self.args, flags);
         self.content
-            .update(parent, &try_upgrade(&self.factory.state)?.borrow(), flags);
+            .update(parent, &try_upgrade(&self.factory.state)?.borrow(), flags)?;
 
         Ok(())
     }
@@ -599,35 +599,61 @@ impl<T: SnippetContentTrait + 'static> SnippetFactoryTrait<T::Args> for SnippetF
     }
 }
 
-struct DummyFactory<T> {
+fn create_dummy_factory<T: Clone + 'static>() -> Box<dyn SnippetFactoryTrait<T>> {
+    Box::new(SnippetFactory::<DummySnippet<_>>::new(
+        Rc::downgrade(&Rc::new(RefCell::new(()))),
+        (),
+        &vec![],
+    ))
+}
+
+struct DummySnippet<T> {
     _phantom: PhantomData<T>,
 }
 
-impl<T> DummyFactory<T> {
-    fn new() -> Self {
-        DummyFactory { _phantom: PhantomData }
-    }
-}
+impl<T: Clone> SnippetContentTrait for DummySnippet<T> {
+    type State = ();
+    type Scope = ();
+    type Args = T;
 
-impl<T> SnippetFactoryTrait<T> for DummyFactory<T> {
-    fn init(
-        &self,
-        args: T,
-        current_path: &Vec<u32>,
-    ) -> Result<Box<dyn SnippetElementTrait<T>>, JsValue> {
-        Err(JsError::new("Tried to get snippet from dummy factory").into())
-    }
+    fn update_args(&mut self, _args: &mut Self::Args, _flags: u64) {}
 
-    fn init_swap(
-        &self,
-        parent: &Element,
-        old_element: &Box<dyn SnippetElementTrait<T>>,
-    ) -> Result<Box<dyn SnippetElementTrait<T>>, JsValue>
+    fn new(
+        _state_rc: &Rc<RefCell<Self::State>>,
+        _scope: &(Self::Scope, Self::Args),
+        _current_path: &Vec<u32>,
+    ) -> Result<Self, JsValue>
+    where
+        Self: Sized,
     {
-        Err(JsError::new("Tried to get snippet from dummy factory").into())
+        Ok(DummySnippet {
+            _phantom: PhantomData,
+        })
     }
 
-    fn update(&mut self, flags: u64) {}
+    fn mount(&mut self, _parent: &Element, _add_method: &dyn AddMethod) -> Result<(), JsValue> {
+        Ok(())
+    }
+
+    fn proc(
+        &mut self,
+        _state_rc: &Rc<RefCell<Self::State>>,
+        _e: web_sys::Event,
+        _target_path: Vec<u32>,
+    ) -> Result<(), JsValue> {
+        Ok(())
+    }
+
+    fn update(
+        &mut self,
+        _parent: &Element,
+        _state: &Self::State,
+        _flags: u64,
+    ) -> Result<(), JsValue> {
+        Ok(())
+    }
+
+    fn unmount(&self) {}
 }
 
 struct IfElement<T: IfContentTrait> {

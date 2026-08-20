@@ -64,6 +64,7 @@ impl GenericFragment for RootFrag {
     }
 
     fn update(&mut self, parent: &Element, state: &Self::State, flags: u64) -> Result<(), JsValue> {
+        web_sys::console::log_1(&format!("update root").into());
         self.a.update(parent, state, flags)?;
 
         Ok(())
@@ -74,8 +75,7 @@ impl GenericFragment for RootFrag {
         state: &Rc<RefCell<Self::State>>,
         e: web_sys::Event,
         target_path: Vec<u32>,
-    ) -> Result<(), JsValue>
-    {
+    ) -> Result<(), JsValue> {
         self.a.proc(state, e, target_path)?;
 
         Ok(())

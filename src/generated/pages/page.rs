@@ -115,11 +115,7 @@ impl GenericFragment for RootFrag {
         let el3 = document.create_element("p")?;
         el3.set_inner_html(&format!("Count: {}", *state.counter));
         let el4 = document.create_element("p")?;
-        let el5 = IfElement::new(
-            state_rc,
-            scope,
-            &prepend_path(current_path, 5),
-        )?;
+        let el5 = IfElement::new(state_rc, scope, &prepend_path(current_path, 5))?;
         let el6 = EachElement::new(state_rc, scope, &prepend_path(current_path, 6))?;
         let el7 = document.create_element("div")?;
         let el8 = document.create_element("p")?;
@@ -140,11 +136,12 @@ impl GenericFragment for RootFrag {
             Component::<snippet_switcher::RootFrag>::new(&k_state, &prepend_path(current_path, 7))?;
 
         let l_state = <scoped_snippet::RootFrag as GenericFragment>::State::startup(());
-        let l = Component::<scoped_snippet::RootFrag>::new(&l_state, &prepend_path(current_path, 8))?;
+        let l =
+            Component::<scoped_snippet::RootFrag>::new(&l_state, &prepend_path(current_path, 8))?;
 
         let m_state = bs_parent::State::startup(());
         let m = Component::<bs_parent::RootFrag>::new(&m_state, &prepend_path(current_path, 9))?;
-        
+
         // target paths are static and unique to each fragment
         // listeners are in new() to preserve them if moved (unmounted & remounted)
         add_listener(&el1, "click", prepend_path(current_path, 1))?;
@@ -241,18 +238,16 @@ impl GenericFragment for RootFrag {
             _ if target == 8 => {
                 self.m.proc(e, target_path)?;
             }
+            _ if target == 9 => {
+                self.m.proc(e, target_path)?;
+            }
             _ => {}
         }
 
         Ok(())
     }
 
-    fn update(
-        &mut self,
-        parent: &Element,
-        state: &Self::State,
-        flags: u64,
-    ) -> Result<(), JsValue> {
+    fn update(&mut self, parent: &Element, state: &Self::State, flags: u64) -> Result<(), JsValue> {
         web_sys::console::log_1(&format!("Updating PageRootFrag with flags: {:b}", flags).into());
         // counter changed
         if flags & 1 << 0 != 0 {
@@ -314,12 +309,7 @@ impl IfContentTrait for If1Content {
     type Scope = ();
     type State = PageState;
 
-    fn branch_changed(
-        &self,
-        state: &Self::State,
-        _scope: &Self::Scope,
-        flags: u64,
-    ) -> bool {
+    fn branch_changed(&self, state: &Self::State, _scope: &Self::Scope, flags: u64) -> bool {
         if flags & 1 << 0 != 0 {
             match self {
                 Self::If(_) if *state.counter > 5 => false,
@@ -364,12 +354,7 @@ impl IfContentTrait for If1Content {
         }
     }
 
-    fn update(
-        &mut self,
-        parent: &Element,
-        state: &Self::State,
-        flags: u64,
-    ) -> Result<(), JsValue> {
+    fn update(&mut self, parent: &Element, state: &Self::State, flags: u64) -> Result<(), JsValue> {
         // Check for changes in content of active branch
         match self {
             Self::If(contents) => contents.update(parent, state, flags),
@@ -402,7 +387,7 @@ impl GenericFragment for IfBranch1 {
     ) -> Result<Self, JsValue> {
         let window = web_sys::window().expect("no global window exists");
         let document = window.document().expect("no document on window exists");
-        
+
         let el5_if = document.create_element("p")?;
         let el5_text_1 = document.create_text_node("Counter is greater than 5! ");
 
@@ -523,11 +508,7 @@ impl EachContentTrait for EachFrag1 {
     type Scope = ();
     type State = PageState;
 
-    fn generate(
-        state: &Self::State,
-        _scope: &Self::Scope,
-        flags: u64,
-    ) -> Option<Vec<Self::Item>> {
+    fn generate(state: &Self::State, _scope: &Self::Scope, flags: u64) -> Option<Vec<Self::Item>> {
         if flags & 1 << 0 != 0 {
             Some((0..*state.counter).collect())
         } else {
@@ -597,12 +578,7 @@ impl<'a> IfContentTrait for If2Content {
     type Scope = ((), Rc<i32>);
     type State = PageState;
 
-    fn branch_changed(
-        &self,
-        _state: &Self::State,
-        _scope: &Self::Scope,
-        _flags: u64,
-    ) -> bool {
+    fn branch_changed(&self, _state: &Self::State, _scope: &Self::Scope, _flags: u64) -> bool {
         false // no dynamic content in this example, so branch never changes after initial render
     }
 
@@ -618,7 +594,10 @@ impl<'a> IfContentTrait for If2Content {
         let a = document.create_element("p")?;
         a.set_inner_html(&format!("{}", a_scope));
 
-        Ok(Self { a, d_scope: scope.clone() })
+        Ok(Self {
+            a,
+            d_scope: scope.clone(),
+        })
     }
 
     fn mount(&mut self, parent: &Element, add_method: &dyn AddMethod) -> Result<(), JsValue> {

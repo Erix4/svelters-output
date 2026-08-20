@@ -69,9 +69,19 @@ impl GenericFragment for RootFrag {
         let b_state = bs_child::State::startup(());
         let b = Component::<bs_child::RootFrag>::new(&b_state, current_path)?;
 
+        // Update bound snippet
+        {
+            let mut state = state.borrow_mut();
+            *state.snip = b_state.borrow().snip.clone_box();
+        }
+
         let state_clone = state.clone();
         let state_clone2 = state.clone();
-        let c = (**state.borrow().snip).init(
+        let factory = {
+            let state = state.borrow();
+            state.snip.clone_box()
+        };
+        let c = factory.init(
             (DynamicArg::new(
                 move || {
                     let state = state_clone.borrow();
@@ -86,7 +96,7 @@ impl GenericFragment for RootFrag {
             current_path,
         )?;
 
-        add_listener(&a, "change", prepend_path(current_path, 1))?;
+        add_listener(&a, "input", prepend_path(current_path, 1))?;
 
         Ok(RootFrag { a, b, c })
     }
@@ -102,6 +112,9 @@ impl GenericFragment for RootFrag {
     fn update(&mut self, parent: &Element, state: &Self::State, flags: u64) -> Result<(), JsValue> {
         self.c.update(parent, flags)?;
 
+        // Propogate to children
+        self.b.apply()?;
+
         Ok(())
     }
 
@@ -113,7 +126,8 @@ impl GenericFragment for RootFrag {
     ) -> Result<(), JsValue> {
         let target = target_path.pop().unwrap();
         match e.type_().as_str() {
-            "change" if target == 1 => {
+            "input" if target == 1 => {
+                web_sys::console::log_1(&format!("got change event").into());
                 let mut state = state.borrow_mut();
                 *state.message = self.a.value();
             }

@@ -12,7 +12,7 @@ use wasm_bindgen::{
     prelude::{wasm_bindgen, Closure},
     JsCast, JsError, JsValue,
 };
-use web_sys::{Comment, Element, Node, Text, HtmlInputElement};
+use web_sys::{Comment, Element, HtmlInputElement, Node, Text};
 
 use crate::generated::RootFrag;
 
@@ -370,11 +370,8 @@ impl<
     where
         Self: Sized,
     {
-        let factory = SnippetFactory::<FC>::new(
-            Rc::downgrade(&state_rc),
-            scope.clone(),
-            current_path,
-        );
+        let factory =
+            SnippetFactory::<FC>::new(Rc::downgrade(&state_rc), scope.clone(), current_path);
         let content = T::new(state_rc, &(scope.clone(), factory.clone()), current_path)?;
 
         Ok(SnippetScope { content, factory })
@@ -440,12 +437,14 @@ impl<T: SnippetContentTrait> SnippetElementTrait<T::Args> for SnippetElement<T> 
     }
 
     fn proc(&mut self, e: web_sys::Event, target_path: Vec<u32>) -> Result<(), JsValue> {
+        web_sys::console::log_1(&format!("proc'ing snippet element").into());
         self.content
             .proc(&try_upgrade(&self.factory.state)?, e, target_path)
     }
 
     fn update(&mut self, parent: &Element, flags: u64) -> Result<(), JsValue> {
         self.content.update_args(&mut self.args, flags);
+        web_sys::console::log_1(&format!("updatinging snippet element").into());
         self.content
             .update(parent, &try_upgrade(&self.factory.state)?.borrow(), flags)?;
 
@@ -535,6 +534,8 @@ trait SnippetFactoryTrait<Args> {
     ) -> Result<Box<dyn SnippetElementTrait<Args>>, JsValue>;
 
     fn update(&mut self, flags: u64);
+
+    fn clone_box(&self) -> Box<dyn SnippetFactoryTrait<Args>>;
 }
 
 impl<T: SnippetContentTrait> SnippetFactory<T> {
@@ -557,6 +558,7 @@ impl<T: SnippetContentTrait + 'static> SnippetFactoryTrait<T::Args> for SnippetF
         let document = window.document().expect("no document on window exists");
 
         let factory: SnippetFactory<T> = self.clone();
+        web_sys::console::log_1(&format!("init snippet element from factory").into());
         Ok(Box::new(SnippetElement {
             content: T::new(
                 &try_upgrade(&self.state)?,
@@ -578,6 +580,7 @@ impl<T: SnippetContentTrait + 'static> SnippetFactoryTrait<T::Args> for SnippetF
         let factory: SnippetFactory<T> = self.clone();
         old_element.unmount();
         let (args, current_path, comment) = old_element.extract_for_swap();
+        web_sys::console::log_1(&format!("init swap snippet element from factory").into());
         let mut new_content = T::new(
             &try_upgrade(&self.state)?,
             &(self.scope.clone(), args.clone()),
@@ -596,6 +599,10 @@ impl<T: SnippetContentTrait + 'static> SnippetFactoryTrait<T::Args> for SnippetF
     /// Store changes to state so snippets using this factory know what to update
     fn update(&mut self, flags: u64) {
         self.update_flags = Rc::new(RefCell::new(flags));
+    }
+
+    fn clone_box(&self) -> Box<dyn SnippetFactoryTrait<T::Args>> {
+        Box::new(self.clone())
     }
 }
 
